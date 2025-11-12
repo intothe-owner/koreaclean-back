@@ -23,6 +23,7 @@ import faq from './routes/faq';
 import qna from './routes/qna';
 import reviews from './routes/reviews';
 import createChatRouter from './routes/chat';
+import apiRouter from './routes/api';
 import {uploadRouter} from './routes/upload-route';
 
 
@@ -91,6 +92,7 @@ app.use('/faq', faq);
 app.use('/qna', qna);
 app.use('/reviews', reviews);
 app.use('/upload', uploadRouter);
+app.use('/api', apiRouter);
 
 // 인증 파서 → /chat 라우터 전에
 app.use(attachUserFromAuthHeader);
