@@ -49,7 +49,7 @@ const corsOptions: cors.CorsOptions = {
     'http://113.131.151.103:8088',
     'http://localhost:8088',
     'https://dapi.kakao.com',
-    '54.180.232.17'
+    'http://54.180.232.17'
   ],
   credentials: true,
   methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS'],
