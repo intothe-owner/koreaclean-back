@@ -25,27 +25,7 @@ export function attachSocket(server: http.Server) {
       io.to(`room:${roomId}`).emit('presence', { roomId, userId, state: 'leave' });
     });
 
-    socket.on('send_message', async ({ roomId, type, content, attachments }) => {
-      const msg = await sendMessage({
-        room_id: roomId,
-        author_user_id: userId,
-        type: type ?? 'TEXT',
-        content: content ?? null,
-        attachments: attachments ?? null,
-      });
-      io.to(`room:${roomId}`).emit('new_message', { message: msg });
-    });
-
-    socket.on('read', async ({ roomId, last_read_message_id, perMessage }) => {
-      await markRead({
-        room_id: roomId,
-        user_id: userId,
-        last_read_message_id,
-        usePerMessageReceipt: !!perMessage,
-      });
-      io.to(`room:${roomId}`).emit('read', { roomId, userId, last_read_message_id });
-    });
-
+    
     socket.on('typing', ({ roomId, state }) => {
       io.to(`room:${roomId}`).emit('typing', { roomId, userId, state: !!state });
     });

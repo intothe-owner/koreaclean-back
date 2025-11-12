@@ -250,7 +250,7 @@ function mapSiteToResponse(site: any) {
     terms_text: pickString(s, "termsText", "terms_text", ""),
     privacy_text: pickString(s, "privacyText", "privacy_text", ""),
 
-    icon_url: s.iconUrl ?`http://113.131.151.103:4500${s.iconUrl}`: null,
+    icon_url: s.iconUrl ?`http://3.36.49.217:4500${s.iconUrl}`: null,
     icon_key: s.iconKey ?s.iconKey: null,
 
     created_at: s.createdAt ?? s.created_at ?? null,

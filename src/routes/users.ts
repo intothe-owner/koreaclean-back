@@ -154,7 +154,8 @@ router.post('/login', async (req: Request, res: Response) => {
   const { email, password, rememberMe } = req.body ?? {};
   const normalizedEmail = String(email ?? '').trim().toLowerCase();
   const rawPassword = String(password ?? '');
-
+  const password_hash = rawPassword ? await bcrypt.hash(rawPassword, 10) : undefined;
+  console.log(password_hash);
   if (!normalizedEmail || !rawPassword) {
     return res.status(400).json({ is_success: false, message: 'email과 password는 필수입니다.' });
   }
