@@ -15,10 +15,11 @@
     "dialect": "mysql"
   },
   "production": {
-    "username": "root",
-    "password": null,
-    "database": "database_production",
-    "host": "127.0.0.1",
-    "dialect": "mysql"
+    "username": "admin",
+    "password": "!koreaclean",
+    "database": "koreaclean",
+    "host": "koreaclean.cnwwa8cgkea5.ap-northeast-2.rds.amazonaws.com",
+    "dialect": "mysql",
+    "timezone": "+09:00" 
   }
 }
