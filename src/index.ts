@@ -50,7 +50,8 @@ const corsOptions: cors.CorsOptions = {
     'http://113.131.151.103:8088',
     'http://localhost:8088',
     'https://dapi.kakao.com',
-    'http://54.180.232.178'
+    'http://54.180.232.178',
+    'http://koreaclean.kr'
   ],
   credentials: true,
   methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS'],
