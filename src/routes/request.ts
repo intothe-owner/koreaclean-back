@@ -14,7 +14,17 @@ type PDFDoc = InstanceType<typeof PDFDocument>; // ✅ 핵심!
 const FONT_DIR = path.join(__dirname, "../../assets/fonts");
 const KR_REG = path.join(FONT_DIR, "NotoSansKR-Regular.ttf");
 const KR_BOLD = path.join(FONT_DIR, "NotoSansKR-Bold.ttf");
-
+type SeniorWorkPayload = {
+  id?: number;
+  name?: string;
+  address?: string;
+  address_detail?: string;
+  lat?: number | null;
+  lng?: number | null;
+  work_date?: string | null;
+  work?: string | null;
+  status?: string | null; // WAIT | IN_PROGRESS | DONE ...
+};
 // 서버 시작 시 1회 등록(없는 경우 에러 방지용 가드)
 function registerKoreanFonts(doc: PDFDoc) {
   // pdfkit은 doc 인스턴스마다 registerFont가 필요합니다.
@@ -689,41 +699,89 @@ router.patch("/assignment/:id/status", async (req: Request, res: Response) => {
 });
 
 //경로당별로 작업 업데이트
+//경로당별로 작업 업데이트
 router.post("/:requestId/seniors-json", async (req: Request, res: Response) => {
   try {
-    const requestId = req.params.requestId;
-    // 1) 바디에서 seniors 꺼내기
-    const { seniors } = req.body as { seniors?: any };
-    // 2) 기본 검증
-    if (!Array.isArray(seniors)) {
-      return res.status(400).json({ is_success: false, message: "seniors 배열이 필요합니다." });
-    }
-    // 4) 서버에서 request_id 주입 (및 누락 필드 기본값 정리)
-    const normalized = seniors.map((s: any) => ({
-      id: s.id,
-      name: s.name,
-      address: s.address,
-      address_detail: s.address_detail ?? "",
-      lat: Number(s.lat),
-      lng: Number(s.lng),
-      work_date: s.work_date ?? "", // 비어있어도 허용
-      work: s.work ?? "",
-    }));
-    console.log(normalized);
-    await ServiceRequest.update({
-      seniors: normalized
-    }, {
-      where: {
-        id: requestId
-      }
-    });
-    return res.status(200).json({ is_success: true, message: "작업 업데이트 성공" });
+    // 0) 인증 (ensureAuthed는 아래쪽에 선언돼 있어도 function 이라 호이스팅 됩니다)
+    const decoded = ensureAuthed(req, res);
+    if (!decoded) return;
 
+    // 1) 파라미터
+    const requestId = Number(req.params.requestId);
+    if (!requestId) {
+      return res
+        .status(400)
+        .json({ is_success: false, message: "유효하지 않은 requestId 입니다." });
+    }
+
+    // 2) 바디에서 seniors 꺼내기
+    const { seniors } = req.body as { seniors?: SeniorWorkPayload[] };
+    if (!Array.isArray(seniors)) {
+      return res
+        .status(400)
+        .json({ is_success: false, message: "seniors 배열이 필요합니다." });
+    }
+
+    // 3) 정규화: DB에 저장할 형태로 가공
+    const normalized = seniors.map((s, idx) => {
+      const statusRaw = (s.status || "").toString().toUpperCase();
+
+      // 기본값: WAIT / IN_PROGRESS / DONE 정도만 사용 (필요하면 추가)
+      const ALLOWED = new Set(["WAIT", "IN_PROGRESS", "DONE"]);
+      const status = ALLOWED.has(statusRaw) ? statusRaw : "WAIT";
+
+      return {
+        id: s.id ?? idx,
+        name: s.name ?? "",
+        address: s.address ?? "",
+        address_detail: s.address_detail ?? "",
+        lat:
+          typeof s.lat === "number"
+            ? s.lat
+            : s.lat != null
+            ? Number(s.lat)
+            : null,
+        lng:
+          typeof s.lng === "number"
+            ? s.lng
+            : s.lng != null
+            ? Number(s.lng)
+            : null,
+        work_date: s.work_date ?? "", // 빈 문자열 허용
+        work: s.work ?? "",
+        status, // ✅ 경로당별 상태까지 같이 저장
+      };
+    });
+
+    console.log("seniors-normalized:", normalized);
+
+    // 4) ServiceRequest.seniors JSON 컬럼 업데이트
+    const [affected] = await ServiceRequest.update(
+      { seniors: normalized },
+      { where: { id: requestId } }
+    );
+
+    if (!affected) {
+      return res
+        .status(404)
+        .json({ is_success: false, message: "신청을 찾을 수 없습니다." });
+    }
+
+    return res
+      .status(200)
+      .json({
+        is_success: true,
+        message: "작업 업데이트 성공",
+        seniors: normalized,
+      });
   } catch (error) {
-    console.log(error);
-    return res.status(500).json({ is_success: false, message: "작업 업데이트 실패" });
+    console.error(error);
+    return res
+      .status(500)
+      .json({ is_success: false, message: "작업 업데이트 실패" });
   }
 });
+
 
 
 
