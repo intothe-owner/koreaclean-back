@@ -3,20 +3,108 @@ import { Router, Request, Response } from "express";
 import dotenv from "dotenv";
 import multer from "multer";
 import path from "path";
-import fs from "fs";
-import * as jwt from 'jsonwebtoken';
+import * as jwt from "jsonwebtoken";
+import {
+  S3Client,
+  PutObjectCommand,
+  DeleteObjectCommand,
+} from "@aws-sdk/client-s3";
+
 dotenv.config();
 
-// 필요 시: 로그인 세션을 쓰면 여기서 가져오세요.
-// import { auth } from "../middlewares/auth";
-
-const { Review, User,sequelize } = require("../../models");
+const { Review, User, sequelize } = require("../../models");
 const { Op } = require("sequelize");
+
 type Secret = jwt.Secret;
-const ACCESS_SECRET: Secret = (process.env.JWT_ACCESS_SECRET ?? 'dev-access') as Secret;
+const ACCESS_SECRET: Secret = (process.env.JWT_ACCESS_SECRET ?? "dev-access") as Secret;
+
 const router = Router();
 
-// ===== 업로드 설정 (메모리 → 디스크 저장) =====
+/* ------------------ S3 설정 ------------------ */
+/**
+ * .env 예시
+ *  AWS_REGION=ap-northeast-2
+ *  AWS_S3_BUCKET=your-bucket-name
+ *  CDN_BASE_URL=https://xxxx.cloudfront.net
+ *  # 또는
+ *  # S3_PUBLIC_BASE_URL=https://your-bucket.s3.ap-northeast-2.amazonaws.com
+ */
+const S3_REGION = process.env.AWS_REGION || "ap-northeast-2";
+const S3_BUCKET = process.env.AWS_S3_BUCKET || "";
+const ASSET_BASE_URL =`https://${S3_BUCKET}.s3.${S3_REGION}.amazonaws.com`
+
+if (!S3_BUCKET) {
+  console.warn("[reviews.ts] 경고: AWS_S3_BUCKET 환경변수가 설정되지 않았습니다.");
+}
+
+const s3 = new S3Client({ region: S3_REGION });
+
+/** 리뷰 사진을 S3에 업로드 */
+async function uploadReviewPhotoToS3(file: Express.Multer.File) {
+  if (!S3_BUCKET) {
+    throw new Error("S3 버킷이 설정되지 않았습니다(AWS_S3_BUCKET).");
+  }
+
+  const ext = (path.extname(file.originalname) || ".jpg").toLowerCase();
+  const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const key = `reviews/${stamp}${ext}`;
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      Body: file.buffer,
+      ContentType: file.mimetype,
+      // ACL 설정은 하지 않음 (AccessControlListNotSupported 방지)
+    })
+  );
+
+  const base =
+    ASSET_BASE_URL ||
+    `https://${S3_BUCKET}.s3.${S3_REGION}.amazonaws.com`;
+
+  const url = `${base.replace(/\/$/, "")}/${key}`;
+  return { key, url };
+}
+
+/** S3 URL에서 key 추출 (우리 규칙으로 생성된 URL일 때만) */
+function extractS3KeyFromUrl(url?: string | null): string | null {
+  if (!url || !S3_BUCKET) return null;
+
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+
+  const base1 =
+    ASSET_BASE_URL && ASSET_BASE_URL.replace(/\/$/, "") + "/";
+  const base2 = `https://${S3_BUCKET}.s3.${S3_REGION}.amazonaws.com/`;
+
+  if (base1 && trimmed.startsWith(base1)) {
+    return trimmed.slice(base1.length);
+  }
+  if (trimmed.startsWith(base2)) {
+    return trimmed.slice(base2.length);
+  }
+
+  // 그 외(/uploads/... 같은 예전 로컬 경로)는 삭제하지 않음
+  return null;
+}
+
+/** S3 객체 삭제 (key 기준) */
+async function deleteS3Object(key?: string | null) {
+  if (!key || !S3_BUCKET) return;
+  try {
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: key,
+      })
+    );
+  } catch (e) {
+    console.warn("[reviews.ts] S3 사진 삭제 실패(무시):", e);
+  }
+}
+
+/* ------------------ 업로드 설정 (multer: 메모리) ------------------ */
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 }, // 8MB
@@ -43,25 +131,7 @@ function qBool(v: unknown): boolean | undefined {
   return undefined;
 }
 
-// 저장소 보장
-function ensureDir(p: string) {
-  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-}
-
-// 파일 저장 유틸
-function savePhotoToDisk(file: Express.Multer.File) {
-  const baseDir = path.resolve(process.cwd(), "uploads", "reviews");
-  ensureDir(baseDir);
-  const ext = (path.extname(file.originalname) || ".jpg").toLowerCase();
-  const name = `${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
-  const full = path.join(baseDir, name);
-  fs.writeFileSync(full, file.buffer);
-  // 정적서빙을 /uploads 로 잡았다고 가정 (app.ts: app.use("/uploads", express.static("uploads")))
-  const url = `/uploads/reviews/${name}`;
-  return { full, url };
-}
-
-// ===== 목록 조회 =====
+/* ------------------ 목록 조회 ------------------ */
 /**
  * GET /api/reviews
  * query:
@@ -96,7 +166,10 @@ router.get("/", async (req: Request, res: Response) => {
     }
     const rmin = Math.max(1, Math.min(5, Number(rating_min ?? 1)));
     const rmax = Math.max(1, Math.min(5, Number(rating_max ?? 5)));
-    if (rmin || rmax) where.rating = { [Op.between]: [Math.min(rmin, rmax), Math.max(rmin, rmax)] };
+    if (rmin || rmax)
+      where.rating = {
+        [Op.between]: [Math.min(rmin, rmax), Math.max(rmin, rmax)],
+      };
 
     if (q && q.trim()) {
       const s = q.trim();
@@ -108,7 +181,9 @@ router.get("/", async (req: Request, res: Response) => {
 
     const validOrderBy = ["createdAt", "rating"];
     const by = validOrderBy.includes(order_by) ? order_by : "createdAt";
-    const dir = (String(order_dir || "").toUpperCase() === "ASC" ? "ASC" : "DESC") as "ASC" | "DESC";
+    const dir = (String(order_dir || "").toUpperCase() === "ASC"
+      ? "ASC"
+      : "DESC") as "ASC" | "DESC";
 
     const { rows, count } = await Review.findAndCountAll({
       where,
@@ -133,14 +208,20 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
-// ===== 단건 조회 =====
+/* ------------------ 단건 조회 ------------------ */
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const idNum = qNum(req.params.id);
-    if (!idNum) return res.status(400).json({ is_success: false, message: "유효한 ID가 아닙니다." });
+    if (!idNum)
+      return res
+        .status(400)
+        .json({ is_success: false, message: "유효한 ID가 아닙니다." });
 
     const item = await Review.findByPk(idNum);
-    if (!item) return res.status(404).json({ is_success: false, message: "리뷰가 존재하지 않습니다." });
+    if (!item)
+      return res
+        .status(404)
+        .json({ is_success: false, message: "리뷰가 존재하지 않습니다." });
 
     return res.json({ is_success: true, item });
   } catch (error: any) {
@@ -152,7 +233,7 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// ===== 생성 (multipart/form-data) =====
+/* ------------------ 생성 (multipart/form-data) ------------------ */
 /**
  * POST /api/reviews
  * form-data:
@@ -161,68 +242,87 @@ router.get("/:id", async (req: Request, res: Response) => {
  *  - rating: number (1~5, 기본 5)
  *  - photo: file? (선택)
  * 동작:
- *  - photo가 있으면 저장하고 photo_url 생성
- *  - reviewer_user_id는 세션 기반이면 req.user?.id 에서 주입 (선택) 
+ *  - photo가 있으면 S3에 올리고 photo_url 생성
+ *  - reviewer_user_id는 JWT에서 추출
  */
-router.post("/", upload.single("photo"), async (req: Request, res: Response) => {
-  // auth가 있다면 미들웨어로 앞단에 추가하세요: router.post("/", auth, upload.single(...), ...)
-  const t = await sequelize.transaction();
-  try {
-    const { title, content } = req.body || {};
-    // ---- 인증 ----
-    const bearer = req.headers.authorization;
-    const fromHeader = bearer?.startsWith("Bearer ") ? bearer.split(" ")[1] : undefined;
-    const token = fromHeader || (req.cookies?.access_token as string | undefined);
-    if (!token) {
-      return res.status(401).json({ is_success: false, message: "인증 토큰이 필요합니다." });
+router.post(
+  "/",
+  upload.single("photo"),
+  async (req: Request, res: Response) => {
+    const t = await sequelize.transaction();
+    try {
+      const { title, content } = req.body || {};
+
+      // ---- 인증 ----
+      const bearer = req.headers.authorization;
+      const fromHeader = bearer?.startsWith("Bearer ")
+        ? bearer.split(" ")[1]
+        : undefined;
+      const token =
+        fromHeader || (req.cookies?.access_token as string | undefined);
+      if (!token) {
+        await t.rollback();
+        return res
+          .status(401)
+          .json({ is_success: false, message: "인증 토큰이 필요합니다." });
+      }
+      const decoded = jwt.verify(token, ACCESS_SECRET) as any;
+      const user = await User.findByPk(decoded.sub);
+
+      let rating = Number(req.body?.rating ?? 5);
+      if (!title || !String(title).trim()) {
+        await t.rollback();
+        return res
+          .status(400)
+          .json({ is_success: false, message: "제목은 필수입니다." });
+      }
+      if (!content || !String(content).trim()) {
+        await t.rollback();
+        return res
+          .status(400)
+          .json({ is_success: false, message: "내용은 필수입니다." });
+      }
+      rating = Math.max(
+        1,
+        Math.min(5, Number.isNaN(rating) ? 5 : rating)
+      );
+
+      // 첨부 처리 (S3 업로드)
+      let photo_url: string | undefined;
+      if (req.file) {
+        const uploaded = await uploadReviewPhotoToS3(req.file);
+        photo_url = uploaded.url;
+      }
+
+      // 로그인 유저가 있다면 세팅 (없으면 null)
+      const reviewer_user_id = user?.id;
+
+      const item = await Review.create(
+        {
+          title: String(title).trim(),
+          content: String(content).trim(),
+          rating,
+          photo_url: photo_url ?? null,
+          status: "PUBLISHED",
+          reviewer_user_id,
+        },
+        { transaction: t }
+      );
+
+      await t.commit();
+      return res.json({ is_success: true, item });
+    } catch (error: any) {
+      await t.rollback();
+      console.error(error);
+      return res.status(500).json({
+        is_success: false,
+        message: error?.message || "리뷰 저장 중 오류가 발생했습니다.",
+      });
     }
-    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
-    const user = await User.findByPk(decoded.sub);
-
-    let rating = Number(req.body?.rating ?? 5);
-    if (!title || !String(title).trim()) {
-      return res.status(400).json({ is_success: false, message: "제목은 필수입니다." });
-    }
-    if (!content || !String(content).trim()) {
-      return res.status(400).json({ is_success: false, message: "내용은 필수입니다." });
-    }
-    rating = Math.max(1, Math.min(5, Number.isNaN(rating) ? 5 : rating));
-
-    // 첨부 처리
-    let photo_url: string | undefined;
-    if (req.file) {
-      const saved = savePhotoToDisk(req.file);
-      photo_url = saved.url;
-    }
-
-    // 로그인 유저가 있다면 세팅 (없으면 null)
-    const reviewer_user_id = user?.id;
-
-    const item = await Review.create(
-      {
-        title: String(title).trim(),
-        content: String(content).trim(),
-        rating,
-        photo_url: photo_url ?? null,
-        status: "PUBLISHED",
-        reviewer_user_id,
-      },
-      { transaction: t }
-    );
-
-    await t.commit();
-    return res.json({ is_success: true, item });
-  } catch (error: any) {
-    await t.rollback();
-    console.error(error);
-    return res.status(500).json({
-      is_success: false,
-      message: error?.message || "리뷰 저장 중 오류가 발생했습니다.",
-    });
   }
-});
+);
 
-// ===== 수정 (텍스트/상태/별점만) =====
+/* ------------------ 수정 (텍스트/상태/별점만) ------------------ */
 /**
  * PUT /api/reviews/:id
  * body:
@@ -234,20 +334,35 @@ router.post("/", upload.single("photo"), async (req: Request, res: Response) => 
 router.put("/:id", async (req: Request, res: Response) => {
   try {
     const idNum = qNum(req.params.id);
-    if (!idNum) return res.status(400).json({ is_success: false, message: "유효한 ID가 아닙니다." });
+    if (!idNum)
+      return res
+        .status(400)
+        .json({ is_success: false, message: "유효한 ID가 아닙니다." });
 
     const found = await Review.findByPk(idNum);
-    if (!found) return res.status(404).json({ is_success: false, message: "수정 대상 리뷰가 존재하지 않습니다." });
+    if (!found)
+      return res.status(404).json({
+        is_success: false,
+        message: "수정 대상 리뷰가 존재하지 않습니다.",
+      });
 
     const patch: any = {};
     if (req.body.title != null) patch.title = String(req.body.title).trim();
-    if (req.body.content != null) patch.content = String(req.body.content).trim();
+    if (req.body.content != null)
+      patch.content = String(req.body.content).trim();
     if (req.body.rating != null) {
       const r = Math.max(1, Math.min(5, Number(req.body.rating)));
-      if (!Number.isFinite(r)) return res.status(400).json({ is_success: false, message: "별점은 1~5 사이여야 합니다." });
+      if (!Number.isFinite(r))
+        return res.status(400).json({
+          is_success: false,
+          message: "별점은 1~5 사이여야 합니다.",
+        });
       patch.rating = r;
     }
-    if (req.body.status && ["PUBLISHED", "HIDDEN", "PENDING"].includes(req.body.status)) {
+    if (
+      req.body.status &&
+      ["PUBLISHED", "HIDDEN", "PENDING"].includes(req.body.status)
+    ) {
       patch.status = req.body.status;
     }
 
@@ -262,47 +377,86 @@ router.put("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// ===== 사진만 교체 =====
+/* ------------------ 사진만 교체 ------------------ */
 /**
  * POST /api/reviews/:id/photo
  * form-data: photo(file)
  */
-router.post("/:id/photo", upload.single("photo"), async (req: Request, res: Response) => {
-  try {
-    const idNum = qNum(req.params.id);
-    if (!idNum) return res.status(400).json({ is_success: false, message: "유효한 ID가 아닙니다." });
+router.post(
+  "/:id/photo",
+  upload.single("photo"),
+  async (req: Request, res: Response) => {
+    try {
+      const idNum = qNum(req.params.id);
+      if (!idNum)
+        return res
+          .status(400)
+          .json({ is_success: false, message: "유효한 ID가 아닙니다." });
 
-    const found = await Review.findByPk(idNum);
-    if (!found) return res.status(404).json({ is_success: false, message: "리뷰가 존재하지 않습니다." });
-    if (!req.file) return res.status(400).json({ is_success: false, message: "첨부 파일이 없습니다." });
+      const found = await Review.findByPk(idNum);
+      if (!found)
+        return res
+          .status(404)
+          .json({ is_success: false, message: "리뷰가 존재하지 않습니다." });
+      if (!req.file)
+        return res
+          .status(400)
+          .json({ is_success: false, message: "첨부 파일이 없습니다." });
 
-    const saved = savePhotoToDisk(req.file);
-    await found.update({ photo_url: saved.url });
+      // 기존 사진 S3 삭제 (옵션)
+      if (process.env.REMOVE_FILES_ON_DELETE === "true") {
+        const oldUrl = (found as any).photo_url as string | null;
+        const oldKey = extractS3KeyFromUrl(oldUrl);
+        if (oldKey) {
+          await deleteS3Object(oldKey);
+        }
+      }
 
-    return res.json({ is_success: true, item: found });
-  } catch (error: any) {
-    console.error(error);
-    return res.status(500).json({
-      is_success: false,
-      message: error?.message || "사진 교체 중 오류가 발생했습니다.",
-    });
+      const uploaded = await uploadReviewPhotoToS3(req.file);
+      await found.update({ photo_url: uploaded.url });
+
+      return res.json({ is_success: true, item: found });
+    } catch (error: any) {
+      console.error(error);
+      return res.status(500).json({
+        is_success: false,
+        message: error?.message || "사진 교체 중 오류가 발생했습니다.",
+      });
+    }
   }
-});
+);
 
-// ===== 삭제 =====
+/* ------------------ 삭제 ------------------ */
 /**
  * DELETE /api/reviews/:id?force=0|1
  * - 기본 soft delete, force=1 이면 물리 삭제
+ * - REMOVE_FILES_ON_DELETE=true 이면 S3 사진도 삭제 시도
  */
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const idNum = qNum(req.params.id);
-    if (!idNum) return res.status(400).json({ is_success: false, message: "유효한 ID가 아닙니다." });
+    if (!idNum)
+      return res
+        .status(400)
+        .json({ is_success: false, message: "유효한 ID가 아닙니다." });
 
     const force = qBool(req.query.force) === true;
 
     const found = await Review.findByPk(idNum);
-    if (!found) return res.status(404).json({ is_success: false, message: "삭제 대상 리뷰가 존재하지 않습니다." });
+    if (!found)
+      return res.status(404).json({
+        is_success: false,
+        message: "삭제 대상 리뷰가 존재하지 않습니다.",
+      });
+
+    // S3 사진 삭제 (옵션)
+    if (process.env.REMOVE_FILES_ON_DELETE === "true") {
+      const photoUrl = (found as any).photo_url as string | null;
+      const key = extractS3KeyFromUrl(photoUrl);
+      if (key) {
+        await deleteS3Object(key);
+      }
+    }
 
     await found.destroy({ force });
     return res.json({ is_success: true });

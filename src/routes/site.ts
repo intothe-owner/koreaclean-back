@@ -2,22 +2,34 @@
 import { Router, Request, Response } from "express";
 import dotenv from "dotenv";
 import path from "path";
-import fs from "fs";
 import multer from "multer";
+import {
+  S3Client,
+  PutObjectCommand,
+  DeleteObjectCommand,
+} from "@aws-sdk/client-s3";
 
 const { SiteInfo } = require("../../models");
 dotenv.config();
 
 const router = Router();
-// 파일 존재/사이즈 확인 유틸
-async function checkSavedFile(absPath?: string) {
-  if (!absPath) return { exists: false };
-  try {
-    const stat = await fs.promises.stat(absPath);
-    return { exists: stat.isFile(), size: stat.size };
-  } catch {
-    return { exists: false };
-  }
+
+/**
+ * 필요 환경변수(.env)
+ * AWS_REGION=ap-northeast-2
+ * AWS_S3_BUCKET=your-bucket-name
+ * # 선택(있으면 사용, 없으면 s3 기본 URL 사용)
+ * CDN_BASE_URL=https://your-cloudfront-domain  또는
+ * S3_PUBLIC_BASE_URL=https://your-bucket.s3.ap-northeast-2.amazonaws.com
+ */
+const S3_REGION = process.env.AWS_REGION || "ap-northeast-2";
+const S3_BUCKET = process.env.AWS_S3_BUCKET || "";
+const ASSET_BASE_URL =`https://${S3_BUCKET}.s3.${S3_REGION}.amazonaws.com`
+
+if (!S3_BUCKET) {
+  console.warn(
+    "[site.ts] 경고: AWS_S3_BUCKET 환경변수가 설정되지 않았습니다."
+  );
 }
 
 /** meta_tags 파싱: JSON 문자열/콤마 구분/복수 필드 모두 허용 */
@@ -59,24 +71,11 @@ function parseMetaTags(input: unknown): string[] {
   return [];
 }
 
-/** 업로드 폴더 준비 */
-const UPLOAD_DIR = path.join(process.cwd(),  "uploads", "site");
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
-/** multer 설정 (이미지 전용, 5MB 제한) */
-const storage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, UPLOAD_DIR),
-  filename: (_, file, cb) => {
-    const ext = path.extname(file.originalname) || ".png";
-    const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    cb(null, `site_icon_${stamp}${ext}`);
-  },
-});
+/** multer 설정 (메모리 저장, 5MB 제한) */
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_, file, cb) => {
-    
     const ok = /image\/(png|jpeg|jpg|webp|gif|svg\+xml)/i.test(file.mimetype);
     if (!ok) return cb(new Error("이미지 파일만 업로드할 수 있습니다."));
     cb(null, true);
@@ -90,18 +89,51 @@ function toBool(v: any) {
   return false;
 }
 
-/** 기존 아이콘 파일 삭제 (서버 로컬에 있을 때만) */
-function removeOldIconIfLocal(iconUrl?: string | null) {
-  if (!iconUrl) return;
-  // 우리 규칙: /uploads/site/파일명 으로 제공
-  const prefix = "/uploads/site/";
-  if (!iconUrl.startsWith(prefix)) return; // 외부 URL이면 삭제 안 함
-  const filename = iconUrl.replace(prefix, "");
-  const full = path.join(UPLOAD_DIR, filename);
-  fs.promises
-    .access(full, fs.constants.F_OK)
-    .then(() => fs.promises.unlink(full).catch(() => {}))
-    .catch(() => {});
+/** S3 클라이언트 */
+const s3 = new S3Client({ region: S3_REGION });
+
+/** 기존 아이콘 S3에서 삭제 */
+async function removeOldIconFromS3(iconKey?: string | null) {
+  if (!iconKey || !S3_BUCKET) return;
+  try {
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: iconKey,
+      })
+    );
+  } catch (e) {
+    console.warn("[site.ts] 기존 아이콘 삭제 실패(무시):", e);
+  }
+}
+
+/** S3에 파일 업로드 후 { key, url } 반환 */
+async function uploadIconToS3(file: Express.Multer.File) {
+  if (!S3_BUCKET) {
+    throw new Error("S3 버킷이 설정되지 않았습니다(AWS_S3_BUCKET).");
+  }
+
+  const ext = path.extname(file.originalname) || ".png";
+  const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const key = `site/site_icon_${stamp}${ext}`;
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      Body: file.buffer,
+      ContentType: file.mimetype,
+      // ❗ ACL 미사용 (AccessControlListNotSupported 오류 방지)
+    })
+  );
+
+  // 공개 URL 생성 (CDN_BASE_URL 또는 S3 기본 URL)
+  const base =
+    ASSET_BASE_URL ||
+    `https://${S3_BUCKET}.s3.${S3_REGION}.amazonaws.com`;
+
+  const url = `${base.replace(/\/$/, "")}/${key}`;
+  return { key, url };
 }
 
 // 사이트 정보 저장 (업로드 포함)
@@ -109,21 +141,15 @@ router.post(
   "/save",
   upload.single("icon_file"),
   async (req: Request, res: Response) => {
-
     try {
-        // 1) multer가 파일을 받았는지 1차 확인
-    const multerInfo = {
-      hasFile: !!req.file,
-      originalname: req.file?.originalname,
-      mimetype: req.file?.mimetype,
-      sizeFromMulter: req.file?.size,
-      savedFilename: req.file?.filename,
-      savedRelUrl: req.file ? `/uploads/site/${req.file.filename}` : null,
-      savedAbsPath: req.file?.path || (req.file ? path.join(UPLOAD_DIR, req.file.filename) : null),
-    };
+      // multer info (디버그용)
+      const multerInfo = {
+        hasFile: !!req.file,
+        originalname: req.file?.originalname,
+        mimetype: req.file?.mimetype,
+        sizeFromMulter: req.file?.size,
+      };
 
-    // 2) 디스크에 진짜 있는지 2차 확인
-    const diskCheck = await checkSavedFile(multerInfo.savedAbsPath || undefined);
       const {
         site_name = "",
         post_code = "",
@@ -144,9 +170,15 @@ router.post(
       // 🔽 meta_tags robust parsing
       const metaTags = parseMetaTags((req.body as any).meta_tags);
 
-      // 파일 처리
+      // 파일 처리 (S3 업로드)
       let newIconUrl: string | undefined;
-      if (req.file) newIconUrl = `/uploads/site/${req.file.filename}`;
+      let newIconKey: string | undefined;
+
+      if (req.file) {
+        const uploaded = await uploadIconToS3(req.file);
+        newIconUrl = uploaded.url;
+        newIconKey = uploaded.key;
+      }
 
       // upsert 유사
       let site = await SiteInfo.findOne();
@@ -165,15 +197,19 @@ router.post(
 
           // ⬇️ 추가 필드 (모델 필드명과 일치시켜 주세요)
           site_description: String(site_description).trim(),
-          meta_tags:metaTags,                                  // 배열 그대로
+          meta_tags: metaTags, // 배열 그대로
           terms_text: String(terms_text).trim(),
           privacy_text: String(privacy_text).trim(),
 
           iconUrl: newIconUrl || null,
-          iconKey: req.file ? req.file.filename : null,
+          iconKey: newIconKey || null,
         });
       } else {
-        if (newIconUrl) removeOldIconIfLocal(site.iconUrl);
+        // 기존 S3 아이콘 삭제
+        if (newIconKey) {
+          await removeOldIconFromS3(site.iconKey);
+        }
+
         await site.update({
           siteName: String(site_name).trim(),
           postCode: String(post_code).trim(),
@@ -186,28 +222,33 @@ router.post(
           email: String(email).trim().toLowerCase(),
           emailPublic: toBool(email_public),
 
-         site_description: String(site_description).trim(),
-          meta_tags:metaTags,                                  // 배열 그대로
+          site_description: String(site_description).trim(),
+          meta_tags: metaTags, // 배열 그대로
           terms_text: String(terms_text).trim(),
           privacy_text: String(privacy_text).trim(),
 
-          ...(newIconUrl ? { iconUrl: newIconUrl, iconKey: req.file?.filename || null } : {}),
+          ...(newIconUrl
+            ? { iconUrl: newIconUrl, iconKey: newIconKey || null }
+            : {}),
         });
       }
+
       console.log(multerInfo);
-      return res.json({ is_success: true, message: "저장 성공", item: site, _debug: { multerInfo, diskCheck } });
+      return res.json({
+        is_success: true,
+        message: "저장 성공",
+        item: site,
+        _debug: { multerInfo },
+      });
     } catch (error: any) {
-      if (req.file) {
-        const full = path.join(UPLOAD_DIR, req.file.filename);
-        fs.promises.access(full, fs.constants.F_OK)
-          .then(() => fs.promises.unlink(full).catch(() => {}))
-          .catch(() => {});
-      }
       console.error(error);
-      return res.status(400).json({ is_success: false, message: error?.message || "저장 실패" });
+      return res
+        .status(400)
+        .json({ is_success: false, message: error?.message || "저장 실패" });
     }
   }
 );
+
 function pickString(s: any, camel: string, snake: string, fallback = ""): string {
   if (!s) return fallback;
   if (typeof s[camel] === "string") return s[camel];
@@ -222,7 +263,9 @@ function pickArrayOrJsonString<T = string>(s: any, camel: string, snake: string)
     try {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed as T[];
-    } catch {/* ignore */}
+    } catch {
+      /* ignore */
+    }
   }
   return [];
 }
@@ -230,6 +273,14 @@ function pickArrayOrJsonString<T = string>(s: any, camel: string, snake: string)
 function mapSiteToResponse(site: any) {
   if (!site) return null;
   const s = site.toJSON ? site.toJSON() : site;
+
+  const iconUrlRaw = s.iconUrl ?? s.icon_url ?? null;
+  const iconUrl =
+    iconUrlRaw && typeof iconUrlRaw === "string"
+      ? iconUrlRaw.startsWith("http")
+        ? iconUrlRaw
+        : `http://3.36.49.217${iconUrlRaw}` // 이전 로컬 경로와의 호환용
+      : null;
 
   return {
     id: s.id,
@@ -250,14 +301,13 @@ function mapSiteToResponse(site: any) {
     terms_text: pickString(s, "termsText", "terms_text", ""),
     privacy_text: pickString(s, "privacyText", "privacy_text", ""),
 
-    icon_url: s.iconUrl ?`http://3.36.49.217${s.iconUrl}`: null,
-    icon_key: s.iconKey ?s.iconKey: null,
+    icon_url: iconUrl,
+    icon_key: s.iconKey ?? s.icon_key ?? null,
 
     created_at: s.createdAt ?? s.created_at ?? null,
     updated_at: s.updatedAt ?? s.updated_at ?? null,
   };
 }
-
 
 /** (관리자) 사이트 정보 단건 조회 */
 router.get("/detail", async (req: Request, res: Response) => {
