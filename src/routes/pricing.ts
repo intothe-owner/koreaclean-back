@@ -9,7 +9,7 @@ const router = Router();
 const { ServicePricing, sequelize } = require("../../models");
 
 // 서비스 키 고정 (ENUM과 동일해야 함)
-const KEYS = ["totalCare", "generalCleaning", "disinfection", "acDeepClean", "etc"] as const;
+const KEYS = ["airConditioner", "kitchen", "restroom", "acDeepClean"] as const;
 type ServiceKey = typeof KEYS[number];
 
 // 값 검증 헬퍼
@@ -76,11 +76,10 @@ router.get("/pricing", async (req: Request, res: Response) => {
 
     // service_key -> price_krw 맵
     const pricing: Record<ServiceKey, number> = {
-      totalCare: 0,
-      generalCleaning: 0,
-      disinfection: 0,
+      airConditioner: 0,
+      kitchen: 0,
+      restroom: 0,
       acDeepClean: 0,
-      etc: 0,
     };
 
     for (const r of rows) {
