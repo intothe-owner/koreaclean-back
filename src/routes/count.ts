@@ -15,7 +15,7 @@ const router = Router();
 // ✔ 엑셀 파일 경로 (서버에서 실제 위치에 맞게 수정하세요)
 const EXCEL_FILE_PATH = path.join(
   __dirname,
-  '../../data/조합원 명부251112.xlsx'
+  '../../uploads/조합원 명부251112.xlsx'
 );
 
 // 문자열 안전 변환
