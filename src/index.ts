@@ -24,6 +24,7 @@ import qna from './routes/qna';
 import reviews from './routes/reviews';
 import createChatRouter from './routes/chat';
 import apiRouter from './routes/api';
+import countRouter from './routes/count';
 import {uploadRouter} from './routes/upload-route';
 import forgotRouter from './routes/authForgot'; // 위에 만든 파일 경로
 
@@ -96,6 +97,7 @@ app.use('/reviews', reviews);
 app.use('/upload', uploadRouter);
 app.use('/api', apiRouter);
 app.use('/find', forgotRouter); 
+app.use('/count', countRouter); 
 
 // 인증 파서 → /chat 라우터 전에
 app.use(attachUserFromAuthHeader);

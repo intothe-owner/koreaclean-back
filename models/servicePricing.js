@@ -19,11 +19,7 @@ module.exports = (sequelize, DataTypes) => {
       },
       service_key: {
         type: DataTypes.ENUM(
-          "totalCare",        // 토탈케어서비스
-          "generalCleaning",  // 대행청소
-          "disinfection",     // 소독방역
-          "acDeepClean",      // 에어컨종합세척
-          "etc"               // 기타
+          "airConditioner", "kitchen", "restroom", "acDeepClean"
         ),
         allowNull: false,
         comment: "서비스 종류 키",

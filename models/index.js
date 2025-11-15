@@ -3,52 +3,83 @@ const { Sequelize, DataTypes } = require('sequelize');
 const env = process.env.NODE_ENV || 'development';
 const config = require(__dirname + '/../config/config.json')[env];
 
-const sequelize = new Sequelize(config.database, config.username, config.password, {
-  host: config.host,
-  dialect: config.dialect,
-  timezone: config.timezone,
-  logging: (sql, timing) => console.log('[SQL]', sql),
-  define: { underscored: true, paranoid: true, freezeTableName: true },
-});
+const sequelize = new Sequelize(
+  config.database,
+  config.username,
+  config.password,
+  {
+    host: config.host,
+    dialect: config.dialect,
+    timezone: config.timezone,
+    logging: (sql, timing) => console.log('[SQL]', sql),
+    define: {
+      underscored: true,
+      paranoid: true,
+      freezeTableName: true,
+    },
+  }
+);
 
 // ===== 기존 모델 로드 =====
-const User           = require('./user')(sequelize, DataTypes);
-const Company        = require('./company')(sequelize, DataTypes);
-const ServiceRequest = require('./serviceRequest')(sequelize, DataTypes);
+const User                 = require('./user')(sequelize, DataTypes);
+const Company              = require('./company')(sequelize, DataTypes);
+const ServiceRequest       = require('./serviceRequest')(sequelize, DataTypes);
 const ServiceRequestSenior = require('./serviceRequestSenior')(sequelize, DataTypes);
-const SeniorCenter   = require('./seniorCenter')(sequelize, DataTypes);
-const Assignment     = require('./assignment')(sequelize, DataTypes);
-const SiteInfo       = require('./siteInfo')(sequelize, DataTypes);
-const MainBanner     = require('./mainBanner')(sequelize, DataTypes);
-const Notice         = require('./notice')(sequelize, DataTypes);
-const ServicePricing = require('./servicePricing')(sequelize, DataTypes);
-const Faq            = require('./faq')(sequelize, DataTypes);
+const SeniorCenter         = require('./seniorCenter')(sequelize, DataTypes);
+const Assignment           = require('./assignment')(sequelize, DataTypes);
+const SiteInfo             = require('./siteInfo')(sequelize, DataTypes);
+const MainBanner           = require('./mainBanner')(sequelize, DataTypes);
+const Notice               = require('./notice')(sequelize, DataTypes);
+const ServicePricing       = require('./servicePricing')(sequelize, DataTypes);
+const Faq                  = require('./faq')(sequelize, DataTypes);
 
 // ✅ 신규: Review
-const Review         = require('./review')(sequelize, DataTypes);
+const Review               = require('./review')(sequelize, DataTypes);
 
 // ===== 신규: QnA =====
-const PostQna        = require('./post_qna')(sequelize, DataTypes);
-const PostQnaComment = require('./post_qna_comment')(sequelize, DataTypes);
+const PostQna              = require('./post_qna')(sequelize, DataTypes);
+const PostQnaComment       = require('./post_qna_comment')(sequelize, DataTypes);
 
 // ===== 신규: 채팅 =====
-const ChatRoom    = require('./chat_room')(sequelize, DataTypes);
-const ChatMember  = require('./chat_member')(sequelize, DataTypes);   // ✅ 여기
-const ChatMessage = require('./chat_message')(sequelize, DataTypes);
+const ChatRoom             = require('./chat_room')(sequelize, DataTypes);
+const ChatMember           = require('./chat_member')(sequelize, DataTypes);
+const ChatMessage          = require('./chat_message')(sequelize, DataTypes);
+
+// ===== 신규: 통계용 기업 + 서비스통계 =====
+const StatCompany          = require('./statCompany')(sequelize, DataTypes);
+const ServiceStat          = require('./ServiceStat')(sequelize, DataTypes);
 
 // =================== Associations ===================
 
 // 1) User ↔ Company
-User.hasOne(Company, { foreignKey: { name: 'owner_user_id', allowNull: true }, as: 'company' });
-Company.belongsTo(User, { foreignKey: { name: 'owner_user_id', allowNull: true }, as: 'owner' });
+User.hasOne(Company, {
+  foreignKey: { name: 'owner_user_id', allowNull: true },
+  as: 'company',
+});
+Company.belongsTo(User, {
+  foreignKey: { name: 'owner_user_id', allowNull: true },
+  as: 'owner',
+});
 
 // 2) User(신청자) ↔ ServiceRequest
-User.hasMany(ServiceRequest, { foreignKey: { name: 'client_id', allowNull: false }, as: 'serviceRequests' });
-ServiceRequest.belongsTo(User, { foreignKey: { name: 'client_id', allowNull: false }, as: 'creator' });
+User.hasMany(ServiceRequest, {
+  foreignKey: { name: 'client_id', allowNull: false },
+  as: 'serviceRequests',
+});
+ServiceRequest.belongsTo(User, {
+  foreignKey: { name: 'client_id', allowNull: false },
+  as: 'creator',
+});
 
 // 3) User ↔ SeniorCenter
-User.hasMany(SeniorCenter, { foreignKey: { name: 'client_id', allowNull: false }, as: 'seniorCenters' });
-SeniorCenter.belongsTo(User, { foreignKey: { name: 'client_id', allowNull: false }, as: 'users' });
+User.hasMany(SeniorCenter, {
+  foreignKey: { name: 'client_id', allowNull: false },
+  as: 'seniorCenters',
+});
+SeniorCenter.belongsTo(User, {
+  foreignKey: { name: 'client_id', allowNull: false },
+  as: 'users',
+});
 
 // 4) ServiceRequest ↔ Assignment
 ServiceRequest.hasMany(Assignment, {
@@ -154,6 +185,7 @@ ChatMessage.belongsTo(User, {
   foreignKey: { name: 'sender_user_id', allowNull: false },
   as: 'sender',
 });
+
 // ServiceRequest ↔ ServiceRequestSenior (1:N)
 ServiceRequest.hasMany(ServiceRequestSenior, {
   foreignKey: { name: 'service_request_id', allowNull: false },
@@ -165,7 +197,7 @@ ServiceRequestSenior.belongsTo(ServiceRequest, {
   as: 'serviceRequest',
 });
 
-// (선택) SeniorCenter ↔ ServiceRequestSenior (1:N)
+// SeniorCenter ↔ ServiceRequestSenior (1:N)
 SeniorCenter.hasMany(ServiceRequestSenior, {
   foreignKey: { name: 'senior_center_id', allowNull: true },
   as: 'requestLinks',
@@ -173,6 +205,19 @@ SeniorCenter.hasMany(ServiceRequestSenior, {
 ServiceRequestSenior.belongsTo(SeniorCenter, {
   foreignKey: { name: 'senior_center_id', allowNull: true },
   as: 'seniorCenter',
+});
+
+// =================== Stats 관계 ===================
+
+// StatCompany ↔ ServiceStat (1:N)
+StatCompany.hasMany(ServiceStat, {
+  foreignKey: { name: 'company_id', allowNull: false },
+  as: 'stats',
+  onDelete: 'CASCADE',
+});
+ServiceStat.belongsTo(StatCompany, {
+  foreignKey: { name: 'company_id', allowNull: false },
+  as: 'company',
 });
 
 // =================== Export ===================
@@ -198,7 +243,13 @@ module.exports = {
 
   // Chat
   ChatRoom,
-  ChatMember,     // ✅ 내보내기
+  ChatMember,
   ChatMessage,
-  Review
+
+  // Review
+  Review,
+
+  // Stats
+  StatCompany,
+  ServiceStat,
 };
