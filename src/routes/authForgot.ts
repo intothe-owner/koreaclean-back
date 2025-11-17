@@ -127,7 +127,7 @@ router.post('/reset-password', async (req: Request, res: Response) => {
       }
     );
 
-    const resetUrl = `${FRONT_BASE_URL}/reset-password?token=${token}`;
+    const resetUrl = `${FRONT_BASE_URL}/find/reset-password?token=${token}`;
 
     const mailHtml = `
       <div style="font-family: Arial, sans-serif; font-size:14px;">
