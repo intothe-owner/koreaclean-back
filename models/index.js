@@ -49,6 +49,8 @@ const ChatMessage          = require('./chat_message')(sequelize, DataTypes);
 const StatCompany          = require('./statCompany')(sequelize, DataTypes);
 const ServiceStat          = require('./ServiceStat')(sequelize, DataTypes);
 
+// 방문자 통계
+const VisitStat            = require('./visit_stat')(sequelize, DataTypes);
 // =================== Associations ===================
 
 // 1) User ↔ Company
@@ -252,4 +254,6 @@ module.exports = {
   // Stats
   StatCompany,
   ServiceStat,
+
+  VisitStat
 };
