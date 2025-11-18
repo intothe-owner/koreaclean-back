@@ -395,9 +395,16 @@ router.get("/companies", auth(), async (req: Request, res: Response) => {
 });
 
 // ✅ 내 업체 1건 조회 (가장 최근 것 기준)
-router.get("/my", auth(), async (req: Request, res: Response) => {
+router.get("/my",async (req: Request, res: Response) => {
   try {
-    const me = (req as any).user; // auth() 미들웨어에서 넣어준 사용자 정보
+     // 인증 로직 (list/save와 동일)
+    const bearer = req.headers.authorization;
+    const fromHeader = bearer?.startsWith("Bearer ") ? bearer.split(" ")[1] : undefined;
+    const token = fromHeader || (req.cookies?.access_token as string | undefined);
+    if (!token) return res.status(401).json({ is_success: false, message: "인증 토큰이 필요합니다." });
+
+    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
+    const me = await User.findByPk(decoded.sub);
     if (!me?.id) {
       return res.status(401).json({ is_success: false, message: "인증 실패" });
     }
