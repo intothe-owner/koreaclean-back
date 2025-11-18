@@ -28,6 +28,7 @@ import countRouter from './routes/count';
 import visitRouter from './routes/visit';
 import {uploadRouter} from './routes/upload-route';
 import forgotRouter from './routes/authForgot'; // 위에 만든 파일 경로
+import eduRouter from './routes/edu'; // 위에 만든 파일 경로
 
 
 // 인증 미들웨어(Authorization 헤더 → req.user 세팅)
@@ -100,6 +101,7 @@ app.use('/api', apiRouter);
 app.use('/find', forgotRouter); 
 app.use('/count', countRouter); 
 app.use('/visit', visitRouter); 
+app.use('/edu', eduRouter); 
 
 // 인증 파서 → /chat 라우터 전에
 app.use(attachUserFromAuthHeader);

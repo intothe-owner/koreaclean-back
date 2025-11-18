@@ -100,7 +100,7 @@ async function uploadToS3(params: {
 export const uploadRouter = Router();
 
 /** 공통 핸들러 팩토리: prefix만 바꿔 재사용 */
-function makeUploadHandler(prefix: "request" | "company" | "banner" | "qna") {
+function makeUploadHandler(prefix: "request" | "company" | "banner" | "qna"|"edu") {
   return async (req: any, res: any) => {
     try {
       const files = (req.files as Express.Multer.File[]) || [];
@@ -149,6 +149,11 @@ uploadRouter.post(
   "/qna-upload",
   upload.array("files", 10),
   makeUploadHandler("qna")
+);
+uploadRouter.post(
+  "/edu-upload",
+  upload.array("files", 10),
+  makeUploadHandler("edu")
 );
 
 /** (선택) 단일 삭제 라우트 — 필요하면 사용

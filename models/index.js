@@ -51,6 +51,8 @@ const ServiceStat          = require('./ServiceStat')(sequelize, DataTypes);
 
 // 방문자 통계
 const VisitStat            = require('./visit_stat')(sequelize, DataTypes);
+// 교육공지
+const EduNotice            = require('./EduNotice')(sequelize, DataTypes);
 // =================== Associations ===================
 
 // 1) User ↔ Company
@@ -255,5 +257,6 @@ module.exports = {
   StatCompany,
   ServiceStat,
 
-  VisitStat
+  VisitStat,
+  EduNotice
 };
