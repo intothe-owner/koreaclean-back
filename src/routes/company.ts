@@ -20,79 +20,136 @@ const UI_TO_DB: Record<string, "PENDING" | "APPROVED" | "REJECTED" | undefined> 
   rejected: "REJECTED",
 };
 
-//업체 저장하기
+//업체 저장하기 (신규 + 수정)
 router.post("/save", async (req: Request, res: Response) => {
   let tx: Transaction | null = null;
   try {
     const {
+      id,           // ✅ 수정 시 넘어오는 업체 PK (없으면 신규)
       name,         // 기업명
-      ceo,            //대표명
-      biz_no,         //사업자번호
-      corp_no,        //법인번호
-      start_date,     //설립일
-      company_type,   //회사형태
-      post_code,      //우편번호
-      address,        //주소
-      address_detail,  //상세주소
-      lat,             //위도
-      lng,             //경도
-      tel,            //연락처
-      fax,            //팩스번호
-      email,          //이메일
-      homepage,      //홈페이지
-      regions,            //주력 지역
-      certs,              //자격증/경력
-      documents,          //첨부파일
+      ceo,          // 대표명
+      biz_no,       // 사업자번호
+      corp_no,      // 법인번호
+      start_date,   // 설립일
+      company_type, // 회사형태
+      post_code,    // 우편번호
+      address,      // 주소
+      address_detail, // 상세주소
+      lat,          // 위도
+      lng,          // 경도
+      tel,          // 연락처
+      fax,          // 팩스번호
+      email,        // 이메일
+      homepage,     // 홈페이지
+      regions,      // 주력 지역 (JSON)
+      certs,        // 자격증/경력 (JSON)
+      documents,    // 첨부파일 (JSON)
     } = req.body;
+
+    // ==== 인증 ====
     const bearer = req.headers.authorization;
-    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+    const fromHeader = bearer?.startsWith("Bearer ") ? bearer.split(" ")[1] : undefined;
     const token = fromHeader || (req.cookies?.access_token as string | undefined);
 
-    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
+    if (!token) {
+      return res
+        .status(401)
+        .json({ is_success: false, message: "인증 토큰이 필요합니다." });
+    }
 
     const decoded = jwt.verify(token, ACCESS_SECRET) as any; // sub, role 등
     const user = await User.findByPk(decoded.sub);
-    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
-    const owner_user_id = user?.get('id');
-     await Company.create({
-      name,         // 기업명
-      ceo,            //대표명
-      biz_no,         //사업자번호
-      corp_no,        //법인번호
-      start_date,     //설립일
-      company_type,   //회사형태
-      post_code,      //우편번호
-      address,        //주소
-      address_detail,  //상세주소
-      lat,             //위도
-      lng,             //경도
-      tel,            //연락처
-      fax,            //팩스번호
-      email,          //이메일
-      homepage,      //홈페이지
-      regions,            //주력 지역
-      certs,              //자격증/경력
-      documents,          //첨부파일
-      owner_user_id
-    });
+    if (!user) {
+      return res
+        .status(401)
+        .json({ is_success: false, message: "유효하지 않은 토큰입니다." });
+    }
+    const owner_user_id = user.get("id");
+
+    // ==== 공통으로 저장할 필드 ====
+    const saveData = {
+      name,
+      ceo,
+      biz_no,
+      corp_no,
+      start_date, // DATE/DATEONLY 컬럼이면 'YYYY-MM-DD' 문자열이면 됨
+      company_type,
+      post_code,
+      address,
+      address_detail,
+      lat,
+      lng,
+      tel,
+      fax,
+      email,
+      homepage,
+      regions,
+      certs,
+      documents,
+      owner_user_id,
+    };
+
+    tx = await sequelize.transaction();
+
+    let company;
+    let mode: "create" | "update" = "create";
+
+    if (id) {
+      // ✅ 수정 모드: 내 소유의 업체인지 확인 후 업데이트
+      company = await Company.findOne({
+        where: { id, owner_user_id },
+        transaction: tx,
+      });
+
+      if (!company) {
+        await tx?.rollback();
+        return res
+          .status(404)
+          .json({ is_success: false, message: "수정할 업체를 찾을 수 없습니다." });
+      }
+
+      // status 같은 건 그대로 두고 나머지 필드만 업데이트
+      await company.update(saveData, { transaction: tx });
+      mode = "update";
+    } else {
+      // ✅ 신규 등록
+      company = await Company.create(saveData, { transaction: tx });
+      mode = "create";
+    }
+
+    await tx?.commit();
+
+    // ==== 관리자 알림 메일 ====
     const html = `
-      <h3>${name} 정보</h3>
-      <p>대표:${ceo}</p>
-      <p>주소:${post_code}<br/>${address}<br/>${address}</p>
-      <p>연락처:tel.${tel} fax.${fax}</p>
-      <p>이메일:${email}</p>
+      <h3>${name} 정보 (${mode === "create" ? "신규 신청" : "정보 수정"})</h3>
+      <p>대표: ${ceo}</p>
+      <p>주소: ${post_code}<br/>${address}<br/>${address_detail ?? ""}</p>
+      <p>연락처: tel.${tel} fax.${fax ?? ""}</p>
+      <p>이메일: ${email}</p>
     `;
-    await sendEmail({
-      to:'kimnamhyong@gmail.com',
-      subject:'기업신청',
-      html
+    try {
+      await sendEmail({
+        to: "kimnamhyong@gmail.com",
+        subject: mode === "create" ? "기업신청" : "기업정보 수정",
+        html,
+      });
+    } catch (mailErr) {
+      console.warn("메일 전송 실패(무시 가능):", mailErr);
+    }
+
+    return res.json({
+      is_success: true,
+      msg: mode === "create" ? "저장 성공" : "수정 성공",
+      mode,
+      item: company,
     });
-    return res.json({ is_success: true, msg: '저장 성공' });
   } catch (error: any) {
     console.log(error);
-    return res.status(401).json({ is_success: false, msg: '저장 실패' });
+    if (tx) await tx.rollback();
+    return res.status(500).json({ is_success: false, msg: "저장/수정 실패" });
   }
 });
+
 
 // 목록 조회
 router.get("/list", async (req: Request, res: Response) => {
@@ -334,6 +391,40 @@ router.get("/companies", auth(), async (req: Request, res: Response) => {
   } catch (e) {
     console.error(e);
     return res.status(500).json({ is_success: false, message: "조회 실패" });
+  }
+});
+
+// ✅ 내 업체 1건 조회 (가장 최근 것 기준)
+router.get("/my", auth(), async (req: Request, res: Response) => {
+  try {
+    const me = (req as any).user; // auth() 미들웨어에서 넣어준 사용자 정보
+    if (!me?.id) {
+      return res.status(401).json({ is_success: false, message: "인증 실패" });
+    }
+
+    // owner_user_id = 내 id 인 업체 중 가장 최근 것 1건
+    const company = await Company.findOne({
+      where: { owner_user_id: me.id },
+      order: [["createdAt", "DESC"]],
+    });
+
+    if (!company) {
+      return res.status(404).json({
+        is_success: false,
+        message: "등록된 업체가 없습니다.",
+      });
+    }
+
+    return res.json({
+      is_success: true,
+      company,
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({
+      is_success: false,
+      message: "내 업체 정보 조회 실패",
+    });
   }
 });
 // router.get("/companies",auth(), async (req: Request, res: Response) => {

@@ -191,6 +191,17 @@ router.post('/login', async (req: Request, res: Response) => {
   } else {
     res.clearCookie('refresh_token', { path: '/' });
   }
+  let is_company = false;
+  if(user?.role==='COMPANY'){
+    const comRow=await Company.findOne({
+      where:{
+        owner_user_id:user?.id,
+      }
+    });
+    if(comRow?.id){
+      is_company=true;
+    }
+  }
 
   // ✅ 여기! 응답 바디에 accessToken(필요하면 refreshToken도) 포함
   return res.json({
@@ -208,9 +219,10 @@ router.post('/login', async (req: Request, res: Response) => {
         provider: user.get('provider') || 'local',
         createdAt: user.get('createdAt'),
         updatedAt: user.get('updatedAt'),
+        is_company
       },
       accessToken,
-      ...(refreshToken ? { refreshToken } : {}),
+      refreshToken
     },
   });
 });
