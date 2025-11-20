@@ -412,7 +412,7 @@ router.get("/my",async (req: Request, res: Response) => {
     // owner_user_id = 내 id 인 업체 중 가장 최근 것 1건
     const company = await Company.findOne({
       where: { owner_user_id: me.id },
-      order: [["createdAt", "DESC"]],
+      order: [["createdAt", "DESC"]], 
     });
 
     if (!company) {
