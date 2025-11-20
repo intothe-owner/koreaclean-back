@@ -139,12 +139,16 @@ router.post("/save", async (req: Request, res: Response) => {
       <p><b>희망일:</b> ${hope_date || '-'}</p>
       ${etc ? `<hr/><pre style="white-space:pre-wrap">${etc}</pre>` : ''}
     `;
-
-    await sendEmail({
-      to: 'kimnamhyong@gmail.com',
-      subject: '서비스신청',
-      html
-    });
+    try {
+      await sendEmail({
+        to: 'kimnamhyong@gmail.com',
+        subject: '서비스신청',
+        html
+      });
+    } catch (mailErr) {
+      console.warn("메일 전송 실패(무시 가능):", mailErr);
+    }
+    
 
     return res.json({ is_success: true, msg: '저장 성공' });
   } catch (error: any) {
