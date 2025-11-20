@@ -1,3 +1,4 @@
+// routes/users.ts
 import { Request, Response, Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { Transaction } from 'sequelize';
@@ -8,13 +9,16 @@ import { sendEmail } from "../lib/mailer";
 import { Op, fn, col, where as whereFn } from "sequelize";
 
 dotenv.config();
+
 type Secret = jwt.Secret;
 type SignOptions = jwt.SignOptions;
 
 const { User, Company, sequelize } = require('../../models');
 export const router = Router();
 
-const AUTO_LOGIN_ENABLED = String(process.env.AUTO_LOGIN_ENABLED).toLowerCase() === 'true';
+// ───────────────────────────────────────────────────────────────
+// ENV & JWT
+const AUTO_LOGIN_ENABLED: boolean = /^true$/i.test(process.env.AUTO_LOGIN_ENABLED ?? 'true');
 const ACCESS_SECRET: Secret = (process.env.JWT_ACCESS_SECRET ?? 'dev-access') as Secret;
 const REFRESH_SECRET: Secret = (process.env.JWT_REFRESH_SECRET ?? 'dev-refresh') as Secret;
 
@@ -22,15 +26,21 @@ const REFRESH_SECRET: Secret = (process.env.JWT_REFRESH_SECRET ?? 'dev-refresh')
 const ACCESS_EXPIRES_IN = (process.env.JWT_ACCESS_EXPIRES_IN ?? '15m') as SignOptions['expiresIn'];
 const REFRESH_EXPIRES_IN = (process.env.JWT_REFRESH_EXPIRES_IN ?? '30d') as SignOptions['expiresIn'];
 
+// ───────────────────────────────────────────────────────────────
+// Cookie helpers
 function cookieOpts(maxAgeMs?: number) {
   const isProd = process.env.NODE_ENV === 'production';
+  const sameSiteEnv = (process.env.COOKIE_SAMESITE ?? 'lax').toLowerCase(); 
+  const sameSite: 'lax' | 'none' = sameSiteEnv === 'none' ? 'none' : 'lax';
+
   return {
     httpOnly: true,
-    secure: isProd,
-    sameSite: 'lax' as const,
+    secure: isProd || sameSite === 'none',  // SameSite=None은 secure 필수
+    sameSite,
     path: '/',
-    ...(maxAgeMs ? { maxAge: maxAgeMs } : {}),
-  };
+    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+    ...(typeof maxAgeMs === 'number' ? { maxAge: maxAgeMs } : {}),
+  } as const;
 }
 
 function signAccessToken(user: { id: number | string; role?: string; provider?: string }) {
@@ -43,7 +53,7 @@ function signRefreshToken(user: { id: number | string }) {
   return jwt.sign(payload, REFRESH_SECRET, { expiresIn: REFRESH_EXPIRES_IN });
 }
 
-/** 공통: 쿠키를 제거하며 비활성 안내 응답 */
+/** 공통: 쿠키 제거 + 비활성 응답 */
 function respondDeactivated(res: Response) {
   res.clearCookie('access_token', { path: '/' });
   res.clearCookie('refresh_token', { path: '/' });
@@ -56,16 +66,12 @@ function respondDeactivated(res: Response) {
 
 // ───────────────────────────────────────────────────────────────
 // 이메일 중복 체크
-router.get('/check', async (req: any, res: any) => {
+router.get('/check', async (req: Request, res: Response) => {
   try {
     const row = await User.findAndCountAll({
       where: { email: req.query.email }
     });
-    if (row.count === 0) {
-      res.status(200).json({ is_success: true, exists: false });
-    } else {
-      res.status(200).json({ is_success: true, exists: true });
-    }
+    return res.status(200).json({ is_success: true, exists: row.count > 0 });
   } catch (error) {
     return res.json({ is_success: false, msg: `${error} 오류 발생` });
   }
@@ -110,7 +116,6 @@ router.post('/save', async (req: Request, res: Response) => {
           contact: contact ? String(contact).trim() : null,
           phone: phone ? String(phone).trim() : null,
           role: role ? String(role).trim() : null,
-          // is_use 기본값(true) 모델에서 처리
         },
         { transaction: t }
       );
@@ -148,9 +153,7 @@ router.post('/save', async (req: Request, res: Response) => {
 
 // ───────────────────────────────────────────────────────────────
 // 로그인 (is_use=false면 거부)
-// ─── 로그인 (is_use=false면 거부)
 router.post('/login', async (req: Request, res: Response) => {
-  console.log('aaaa');
   const { email, password, rememberMe } = req.body ?? {};
   const normalizedEmail = String(email ?? '').trim().toLowerCase();
   const rawPassword = String(password ?? '');
@@ -173,37 +176,31 @@ router.post('/login', async (req: Request, res: Response) => {
   const ok = await bcrypt.compare(rawPassword, user.get('password_hash') as string);
   if (!ok) return res.status(401).json({ is_success: false, message: '이메일 또는 비밀번호가 올바르지 않습니다.' });
 
-  // ✅ 토큰 생성 시, Sequelize 인스턴스에서 필요한 필드만 안전하게 뽑아서 사용
   const accessToken = signAccessToken({
     id: user.get('id'),
     role: user.get('role'),
     provider: (user.get('provider') as string) || 'local',
   });
-  console.log(accessToken);
-  // 쿠키에도 세팅 (기존 유지)
+
+  // 쿠키 굽기
   res.cookie('access_token', accessToken, cookieOpts(30 * 60 * 1000)); // 30m
 
   let refreshToken: string | undefined = undefined;
   if (AUTO_LOGIN_ENABLED && rememberMe === true) {
     refreshToken = signRefreshToken({ id: user.get('id') });
-    const refreshAgeMs = 30 * 24 * 60 * 60 * 1000;
+    const refreshAgeMs = 30 * 24 * 60 * 60 * 1000; // 30d
     res.cookie('refresh_token', refreshToken, cookieOpts(refreshAgeMs));
   } else {
     res.clearCookie('refresh_token', { path: '/' });
   }
+
+  // is_company 파생값
   let is_company = false;
-  if(user?.role==='COMPANY'){
-    const comRow=await Company.findOne({
-      where:{
-        owner_user_id:user?.id,
-      }
-    });
-    if(comRow?.id){
-      is_company=true;
-    }
+  if (user?.role === 'COMPANY') {
+    const comRow = await Company.findOne({ where: { owner_user_id: user?.id } });
+    if (comRow?.id) is_company = true;
   }
 
-  // ✅ 여기! 응답 바디에 accessToken(필요하면 refreshToken도) 포함
   return res.json({
     is_success: true,
     message: '로그인 성공',
@@ -219,65 +216,87 @@ router.post('/login', async (req: Request, res: Response) => {
         provider: user.get('provider') || 'local',
         createdAt: user.get('createdAt'),
         updatedAt: user.get('updatedAt'),
-        is_company
+        is_company,
       },
       accessToken,
-      refreshToken
+      refreshToken,
     },
   });
 });
 
 // ───────────────────────────────────────────────────────────────
-// 토큰 갱신 (비활성시 쿠키 제거 + 403)
+// 토큰 갱신 (리프레시 토큰만으로 발급)
 router.post('/refresh', async (req: Request, res: Response) => {
   if (!AUTO_LOGIN_ENABLED) {
     return res.status(403).json({ is_success: false, message: '자동로그인이 비활성화되어 있습니다.' });
   }
+
   const rt = req.cookies?.refresh_token as string | undefined;
-  if (!rt) return res.status(401).json({ is_success: false, message: '리프레시 토큰이 없습니다.' });
+  if (!rt) {
+    return res.status(401).json({ is_success: false, message: '리프레시 토큰이 없습니다.' });
+  }
 
   try {
-    const decoded = jwt.verify(rt, process.env.JWT_REFRESH_SECRET || 'dev-refresh') as any;
-    const user = await User.findByPk(decoded.sub);
-    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
+    const decoded = jwt.verify(rt, REFRESH_SECRET) as any; // { sub, t:'refresh', ... }
+    if (decoded?.t !== 'refresh' || !decoded?.sub) {
+      return res.status(401).json({ is_success: false, message: '유효하지 않은 리프레시 토큰입니다.' });
+    }
 
-    // ⛔ 비활성 계정: 강제 로그아웃
+    const user = await User.findByPk(decoded.sub);
+    if (!user) {
+      res.clearCookie('access_token', { path: '/' });
+      res.clearCookie('refresh_token', { path: '/' });
+      return res.status(401).json({ is_success: false, message: '유효하지 않은 사용자입니다.' });
+    }
+
     if (user.get('is_use') === false) {
       return respondDeactivated(res);
     }
 
-    const newAccess = signAccessToken(user);
+    const newAccess = signAccessToken({
+      id: user.get('id'),
+      role: user.get('role'),
+      provider: user.get('provider') || 'local',
+    });
     res.cookie('access_token', newAccess, cookieOpts(30 * 60 * 1000)); // 30m
+
+    // (선택) refresh 토큰 로테이션이 필요하면 아래 주석 해제
+    // const newRefresh = signRefreshToken({ id: user.get('id') });
+    // res.cookie('refresh_token', newRefresh, cookieOpts(30 * 24 * 60 * 60 * 1000));
+
     return res.json({ is_success: true, message: '토큰 갱신', data: { ok: true } });
   } catch (e) {
+    res.clearCookie('access_token', { path: '/' });
+    res.clearCookie('refresh_token', { path: '/' });
     return res.status(401).json({ is_success: false, message: '리프레시 토큰이 유효하지 않습니다.' });
   }
 });
 
 // ───────────────────────────────────────────────────────────────
-// 내 정보 (비활성시 쿠키 제거 + 403)
+// 내 정보 (access_token 또는 쿠키)
 router.get('/me',  async (req: Request, res: Response) => {
-  
   try {
-    const bearer = (req.headers.authorization ?? '') as string;
-    const fromHeader = bearer.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+    const bearer = req.headers.authorization;
+    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
     const token = fromHeader || (req.cookies?.access_token as string | undefined);
-    
+
     if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
-    
 
     const decoded = jwt.verify(token, ACCESS_SECRET) as any;
     const user = await User.findByPk(decoded.sub);
     if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
 
-    // ⛔ 비활성 계정: 강제 로그아웃
     if (user.get('is_use') === false) {
       return respondDeactivated(res);
     }
-  
-    console.log('token',token);
+
+    let is_company = false;
+    if (user?.role === 'COMPANY') {
+      const comRow = await Company.findOne({ where: { owner_user_id: user.get('id') } });
+      if (comRow?.id) is_company = true;
+    }
+
     return res.status(200).json({
-      
       is_success: true,
       data: {
         user: {
@@ -289,10 +308,11 @@ router.get('/me',  async (req: Request, res: Response) => {
           phone: user.get('phone'),
           role: user.get('role'),
           provider: user.get('provider') || 'local',
+          is_company,
           createdAt: user.get('createdAt'),
           updatedAt: user.get('updatedAt'),
         },
-        token
+        token,
       },
     });
   } catch(err:any) {
@@ -310,7 +330,7 @@ router.post('/logout', (_req: Request, res: Response) => {
 });
 
 // ───────────────────────────────────────────────────────────────
-// 업체 승인 조회 (변경 없음)
+// 업체 승인 조회
 router.get("/approv", async (req: Request, res: Response) => {
   try {
     const onlyApproved = ["1", "true", "yes"].includes(String(req.query.onlyApproved ?? "").toLowerCase());
@@ -374,7 +394,7 @@ router.get("/approv", async (req: Request, res: Response) => {
 
 // ───────────────────────────────────────────────────────────────
 // 디버그 쿠키
-router.get('/debug-cookies', (req, res) => {
+router.get('/debug-cookies', (req: Request, res: Response) => {
   return res.json({ cookies: req.cookies, raw: req.headers.cookie });
 });
 
@@ -390,7 +410,7 @@ router.get("/list", auth(), async (req: Request, res: Response) => {
       page_size = "10",
       order_by = "createdAt",
       order_dir = "DESC",
-      use = "active", // active | inactive | all
+      use = "active",
     } = req.query as Record<string, string>;
 
     const p = Math.max(1, parseInt(String(page), 10) || 1);
@@ -459,7 +479,7 @@ router.get("/list", auth(), async (req: Request, res: Response) => {
 });
 
 // ───────────────────────────────────────────────────────────────
-// 공통 where 빌더 (발송용)
+// 이메일 발송 (활성 사용자만)
 function buildWhereFromFilter(filter?: { q?: string; key?: string; role?: string }) {
   const where: any = {};
   if (!filter) return where;
@@ -492,8 +512,6 @@ function buildWhereFromFilter(filter?: { q?: string; key?: string; role?: string
   return where;
 }
 
-// ───────────────────────────────────────────────────────────────
-// 이메일 발송 (활성 사용자만)
 router.post("/send-email", auth(), async (req: Request, res: Response) => {
   try {
     const meRole = (req as any).user?.role ?? (req as any).auth?.role;
@@ -522,7 +540,7 @@ router.post("/send-email", auth(), async (req: Request, res: Response) => {
     let recipients: { id: number; email: string; name?: string | null; inst?: string | null }[] = [];
 
     if (mode === "ALL") {
-      const where = { ...buildWhereFromFilter(filter), is_use: true }; // ✅ 활성만
+      const where = { ...buildWhereFromFilter(filter), is_use: true };
       const rows = await User.findAll({
         where,
         attributes,
@@ -536,7 +554,7 @@ router.post("/send-email", auth(), async (req: Request, res: Response) => {
         return res.status(400).json({ is_success: false, message: "ids가 비어있습니다." });
       }
       const rows = await User.findAll({
-        where: { id: { [Op.in]: ids }, is_use: true }, // ✅ 활성만
+        where: { id: { [Op.in]: ids }, is_use: true },
         attributes,
         limit: Math.min(ids.length, MAX_RECIPIENTS),
         order: [["id", "ASC"]],
@@ -620,7 +638,6 @@ router.patch("/use/:id", auth(), async (req: Request, res: Response) => {
 
     await user.update({ is_use });
 
-    // 만약 본인이 자기 계정을 '탈퇴(false)'로 변경했다면 즉시 로그아웃 쿠키 제거
     if (id === meId && is_use === false) {
       res.clearCookie('access_token', { path: '/' });
       res.clearCookie('refresh_token', { path: '/' });
