@@ -183,7 +183,7 @@ router.post('/login', async (req: Request, res: Response) => {
   });
 
   // 쿠키 굽기
-  res.cookie('access_token', accessToken, cookieOpts(30 * 60 * 1000)); // 30m
+  res.cookie('access_token', accessToken, cookieOpts(30 * 24 * 60 * 60 * 1000)); // 한달
 
   let refreshToken: string | undefined = undefined;
   if (AUTO_LOGIN_ENABLED && rememberMe === true) {
