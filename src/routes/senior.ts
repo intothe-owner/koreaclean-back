@@ -44,7 +44,7 @@ router.post('/save', async (req: Request, res: Response, next) => {
         const { name, address, address_detail, postcode, lat, lng } = req.body;
 
         const token = extractAccessToken(req);             // ✅ 통일된 추출
-        if (!token) return res.status(401).json({ is_success:false, message:'인증 토큰이 필요합니다.' });
+        if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
 
         const decoded = jwt.verify(token, ACCESS_SECRET) as any; // sub, role 등
         const user = await User.findByPk(decoded.sub);
@@ -85,10 +85,13 @@ router.post('/save-bulk', async (req: Request, res: Response, next) => {
     try {
 
 
-        const token = extractAccessToken(req);             // ✅ 통일된 추출
-        if (!token) return res.status(401).json({ is_success:false, message:'인증 토큰이 필요합니다.' });
+        // --- 인증 ---
+        const bearer = req.headers.authorization;
+        const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+        const token = fromHeader || (req.cookies?.access_token as string | undefined);
+        if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
 
-        const decoded = jwt.verify(token, ACCESS_SECRET) as any; // sub, role 등
+        const decoded = jwt.verify(token, ACCESS_SECRET) as any;
         const user = await User.findByPk(decoded.sub);
         if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
         const client_id = user?.get('id');
