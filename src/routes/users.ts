@@ -400,7 +400,7 @@ router.get('/debug-cookies', (req: Request, res: Response) => {
 
 // ───────────────────────────────────────────────────────────────
 // 사용자 목록 (use=active|inactive|all)
-router.get("/list", auth(), async (req: Request, res: Response) => {
+router.get("/list",  async (req: Request, res: Response) => {
   try {
     const {
       q = "",
