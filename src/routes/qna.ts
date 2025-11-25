@@ -164,11 +164,11 @@ router.get("/list", async (req: Request, res: Response) => {
     const bearer = req.headers.authorization;
     const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
     const token = fromHeader || (req.cookies?.access_token as string | undefined);
-    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
+    if (!token) return res.status(401).json({ is_success: false, message: '로그인 후 이용이 가능합니다.' });
 
     const decoded = jwt.verify(token, ACCESS_SECRET) as any;
     const user = await User.findByPk(decoded.sub);
-    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
+    if (!user) return res.status(401).json({ is_success: false, message: '로그인 후 이용이 가능합니다.' });
 
   // 아주 심플한 페이징만 유지(옵션)
   const page = Math.max(1, Number(req.query.page ?? 1));
