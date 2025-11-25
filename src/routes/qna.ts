@@ -16,21 +16,6 @@ type Secret = jwt.Secret;
 const router = Router();
 const ACCESS_SECRET: Secret = (process.env.JWT_ACCESS_SECRET ?? "dev-access") as Secret;
 
-// 공통: 토큰에서 사용자 꺼내기
-function getUserFromReq(req: Request) {
-  const bearer = req.headers.authorization;
-  const fromHeader = bearer?.startsWith("Bearer ") ? bearer.split(" ")[1] : undefined;
-  const token = fromHeader || (req.cookies?.access_token as string | undefined);
-  if (!token) return null;
-
-  try {
-    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
-    return decoded; // { sub, role, ... }
-  } catch {
-    return null;
-  }
-}
-
 /**
  * POST /api/qna/save
  * body(JSON):
@@ -47,11 +32,15 @@ function getUserFromReq(req: Request) {
  * }
  */
 router.post("/save", async (req: Request, res: Response) => {
-  const authUser = getUserFromReq(req);
-  if (!authUser?.sub) {
-    return res.status(401).json({ is_success: false, message: "인증 토큰이 필요합니다." });
-  }
+  // --- 인증 ---
+    const bearer = req.headers.authorization;
+    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+    const token = fromHeader || (req.cookies?.access_token as string | undefined);
+    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
 
+    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
+    const user = await User.findByPk(decoded.sub);
+    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
   // 입력값
   const {
     type, // 카테고리
@@ -108,7 +97,16 @@ router.post("/save", async (req: Request, res: Response) => {
   const t = await sequelize.transaction();
   try {
     // client_id는 반드시 토큰의 sub를 사용 (보안)
-    const client_id = Number(authUser.sub);
+    // --- 인증 ---
+    const bearer = req.headers.authorization;
+    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+    const token = fromHeader || (req.cookies?.access_token as string | undefined);
+    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
+
+    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
+    const user = await User.findByPk(decoded.sub);
+    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
+    const client_id = user?.id
 
     // 저장
     const created = await PostQna.create(
@@ -162,10 +160,15 @@ router.post("/save", async (req: Request, res: Response) => {
 });
 // 추가: 내 문의 목록 (본인 것만)
 router.get("/list", async (req: Request, res: Response) => {
-  const authUser = getUserFromReq(req);
-  if (!authUser?.sub) {
-    return res.status(401).json({ is_success: false, message: "인증 토큰이 필요합니다." });
-  }
+  // --- 인증 ---
+    const bearer = req.headers.authorization;
+    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+    const token = fromHeader || (req.cookies?.access_token as string | undefined);
+    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
+
+    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
+    const user = await User.findByPk(decoded.sub);
+    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
 
   // 아주 심플한 페이징만 유지(옵션)
   const page = Math.max(1, Number(req.query.page ?? 1));
@@ -174,7 +177,7 @@ router.get("/list", async (req: Request, res: Response) => {
   const offset = (page - 1) * page_size;
 
   try {
-    const where = { client_id: Number(authUser.sub) };
+    const where = { client_id: user?.id };
 
     const { rows, count } = await PostQna.findAndCountAll({
       where,
@@ -204,10 +207,15 @@ router.get("/list", async (req: Request, res: Response) => {
 });
 // 상세보기: 본문 + 첨부 + 댓글
 router.get("/detail/:id", async (req: Request, res: Response) => {
-  const authUser = getUserFromReq(req);
-  if (!authUser?.sub) {
-    return res.status(401).json({ is_success: false, message: "인증 토큰이 필요합니다." });
-  }
+  // --- 인증 ---
+    const bearer = req.headers.authorization;
+    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+    const token = fromHeader || (req.cookies?.access_token as string | undefined);
+    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
+
+    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
+    const user = await User.findByPk(decoded.sub);
+    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
 
   const id = Number(req.params.id);
   if (!id || Number.isNaN(id)) {
@@ -215,11 +223,11 @@ router.get("/detail/:id", async (req: Request, res: Response) => {
   }
 
   try {
-    const isAdmin = authUser.role === "ADMIN" || authUser.role === "STAFF";
+    const isAdmin = user?.role === "ADMIN" || user?.role === "STAFF";
 
     // 본인 글 또는 관리자 권한
     const where: any = { id };
-    if (!isAdmin) where.client_id = Number(authUser.sub);
+    if (!isAdmin) where.client_id = Number(user?.id);
 
     const post = await PostQna.findOne({
       where,
@@ -263,12 +271,17 @@ router.get("/detail/:id", async (req: Request, res: Response) => {
 
 // 관리자용 목록
 router.get("/admin/list", async (req: Request, res: Response) => {
-  const authUser = getUserFromReq(req);
-  if (!authUser?.sub) {
-    return res.status(401).json({ is_success: false, message: "인증 토큰이 필요합니다." });
-  }
+  // --- 인증 ---
+    const bearer = req.headers.authorization;
+    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+    const token = fromHeader || (req.cookies?.access_token as string | undefined);
+    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
+
+    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
+    const user = await User.findByPk(decoded.sub);
+    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
   // 권한 체크: SUPER/ADMIN 만 허용 (필요 시 STAFF 포함)
-  const role = String(authUser.role || "");
+  const role = String(user?.role || "");
   const ALLOW = new Set(["SUPER", "ADMIN"]);
   if (!ALLOW.has(role)) {
     return res.status(403).json({ is_success: false, message: "권한이 없습니다." });
@@ -359,14 +372,19 @@ router.get("/admin/list", async (req: Request, res: Response) => {
 // body: { post_id:number, body:string }
 // ==============================
 router.post("/comment", async (req: Request, res: Response) => {
-  const authUser = getUserFromReq(req);
-  if (!authUser?.sub) {
-    return res.status(401).json({ is_success: false, message: "인증 토큰이 필요합니다." });
-  }
+  // --- 인증 ---
+    const bearer = req.headers.authorization;
+    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+    const token = fromHeader || (req.cookies?.access_token as string | undefined);
+    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
+
+    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
+    const user = await User.findByPk(decoded.sub);
+    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
 
   const { post_id, body } = req.body || {};
-  const userId = Number(authUser.sub);
-  const role = String(authUser.role || "CLIENT"); // 기본 CLIENT 취급
+  const userId = Number(user?.id);
+  const role = String(user?.role || "CLIENT"); // 기본 CLIENT 취급
 
   if (!post_id || !body || !String(body).trim()) {
     return res.status(400).json({ is_success: false, message: "post_id, body는 필수입니다." });
@@ -460,10 +478,15 @@ router.post("/comment", async (req: Request, res: Response) => {
 // (옵션) page, page_size 지원
 // ==============================
 router.get("/comments", async (req: Request, res: Response) => {
-  const authUser = getUserFromReq(req);
-  if (!authUser?.sub) {
-    return res.status(401).json({ is_success: false, message: "인증 토큰이 필요합니다." }); 
-  }
+  // --- 인증 ---
+    const bearer = req.headers.authorization;
+    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+    const token = fromHeader || (req.cookies?.access_token as string | undefined);
+    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
+
+    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
+    const user = await User.findByPk(decoded.sub);
+    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
 
   const post_id = Number(req.query.post_id);
   if (!post_id) {
@@ -476,7 +499,7 @@ router.get("/comments", async (req: Request, res: Response) => {
 
   try {
     // 권한 확인(본인글 또는 관리자)
-    const role = String(authUser.role || "CLIENT");
+    const role = String(user?.role || "CLIENT");
     const isAdmin = role === "SUPER" || role === "ADMIN" || role === "STAFF";
     const post: any = await PostQna.findOne({
       where: { id: post_id },
@@ -485,7 +508,7 @@ router.get("/comments", async (req: Request, res: Response) => {
     if (!post) {
       return res.status(404).json({ is_success: false, message: "게시글을 찾을 수 없습니다." });
     }
-    if (!isAdmin && Number(post.client_id) !== Number(authUser.sub)) {
+    if (!isAdmin && Number(post.client_id) !== Number(user?.id)) {
       return res.status(403).json({ is_success: false, message: "조회 권한이 없습니다." });
     }
 
@@ -511,10 +534,15 @@ router.get("/comments", async (req: Request, res: Response) => {
 });
 // 댓글 삭제: DELETE /api/qna/comment/:id
 router.delete("/comment/:id", async (req: Request, res: Response) => {
-  const authUser = getUserFromReq(req);
-  if (!authUser?.sub) {
-    return res.status(401).json({ is_success: false, message: "인증 토큰이 필요합니다." });
-  }
+  // --- 인증 ---
+    const bearer = req.headers.authorization;
+    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
+    const token = fromHeader || (req.cookies?.access_token as string | undefined);
+    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
+
+    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
+    const user = await User.findByPk(decoded.sub);
+    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
 
   const commentId = Number(req.params.id);
   if (!commentId || Number.isNaN(commentId)) {
@@ -536,7 +564,7 @@ router.delete("/comment/:id", async (req: Request, res: Response) => {
     }
 
     // 2) 본인 확인
-    if (Number(cmt.author_user_id) !== Number(authUser.sub)) {
+    if (Number(cmt.author_user_id) !== Number(user?.id)) {
       await t.rollback();
       return res.status(403).json({ is_success: false, message: "본인 댓글만 삭제할 수 있습니다." });
     }
