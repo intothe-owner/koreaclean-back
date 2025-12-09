@@ -107,14 +107,14 @@ Assignment.belongsTo(Company, {
 });
 
 // =================== QnA 관계 ===================
-User.hasMany(PostQna, {
-  foreignKey: { name: 'client_id', allowNull: false },
-  as: 'qnaPosts',
-});
-PostQna.belongsTo(User, {
-  foreignKey: { name: 'client_id', allowNull: false },
-  as: 'author',
-});
+// User.hasMany(PostQna, {
+//   foreignKey: { name: 'client_id', allowNull: true },
+//   as: 'qnaPosts',
+// });
+// PostQna.belongsTo(User, {
+//   foreignKey: { name: 'client_id', allowNull: true },
+//   as: 'author',
+// });
 
 PostQna.hasMany(PostQnaComment, {
   foreignKey: { name: 'post_id', allowNull: false },

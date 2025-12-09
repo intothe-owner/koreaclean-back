@@ -6,7 +6,10 @@ import * as jwt from "jsonwebtoken";
 import { UniqueConstraintError,Op  } from "sequelize";
 // 알림 메일을 쓰지 않으면 주석 처리 가능
 import { sendEmail } from "../lib/mailer";
-
+function nl2br(str:string) {
+  if (str == null) return '';
+  return String(str).replace(/\r\n|\n\r|\r|\n/g, '<br>');
+}
 // 🔹 models/index.js에서 PostQna를 export 했다고 가정
 const { PostQna, PostQnaComment, sequelize, User } = require("../../models");
 
@@ -36,11 +39,16 @@ router.post("/save", async (req: Request, res: Response) => {
     const bearer = req.headers.authorization;
     const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
     const token = fromHeader || (req.cookies?.access_token as string | undefined);
-    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
-
-    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
-    const user = await User.findByPk(decoded.sub);
-    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
+    // if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
+    let decoded = null;
+    let user = null;
+    if(token){
+      decoded = jwt.verify(token, ACCESS_SECRET) as any;
+      user = await User.findByPk(decoded.sub);
+    }
+    
+     
+    // if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
   // 입력값
   const {
     type, // 카테고리
@@ -48,6 +56,7 @@ router.post("/save", async (req: Request, res: Response) => {
     manager_name,
     tel,
     email,
+    password,
     title,
     content,
     files,
@@ -77,8 +86,8 @@ router.post("/save", async (req: Request, res: Response) => {
       return res.status(400).json({ is_success: false, message: "files는 배열이어야 합니다." });
     }
     // 최소한의 스키마 클린업
-    safeFiles = files.map((f: any) => ({
-      id: f?.id ?? null,
+    safeFiles = files.map((f: any) => ({ 
+      id: f?.id ?? null, 
       url: f?.url ?? "",
       name: f?.name ?? "",
       size: typeof f?.size === "number" ? f.size : null,
@@ -96,25 +105,17 @@ router.post("/save", async (req: Request, res: Response) => {
 
   const t = await sequelize.transaction();
   try {
-    // client_id는 반드시 토큰의 sub를 사용 (보안)
-    // --- 인증 ---
-    const bearer = req.headers.authorization;
-    const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
-    const token = fromHeader || (req.cookies?.access_token as string | undefined);
-    if (!token) return res.status(401).json({ is_success: false, message: '인증 토큰이 필요합니다.' });
-
-    const decoded = jwt.verify(token, ACCESS_SECRET) as any;
-    const user = await User.findByPk(decoded.sub);
-    if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
-    const client_id = user?.id
+    const client_id = user?.id??0;
 
     // 저장
     const created = await PostQna.create(
       {
         client_id,
         category: type,
+        user_email:email,
         title: String(title).trim(),
-        content: mergedContent,
+        merged_content: mergedContent,
+        content,
         files: safeFiles, // JSON 컬럼
         status: "NEW",
         is_private: true,
@@ -236,7 +237,7 @@ router.get("/detail/:id", async (req: Request, res: Response) => {
         "client_id",
         "category",
         "title",
-        "content",
+        "merged_content",
         "files",              // JSON 컬럼
         "status",
         "comment_count",
@@ -280,12 +281,7 @@ router.get("/admin/list", async (req: Request, res: Response) => {
     const decoded = jwt.verify(token, ACCESS_SECRET) as any;
     const user = await User.findByPk(decoded.sub);
     if (!user) return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
-  // 권한 체크: SUPER/ADMIN 만 허용 (필요 시 STAFF 포함)
-  const role = String(user?.role || "");
-  const ALLOW = new Set(["SUPER", "ADMIN"]);
-  if (!ALLOW.has(role)) {
-    return res.status(403).json({ is_success: false, message: "권한이 없습니다." });
-  }
+
 
   // 쿼리 파라미터
   const page = Math.max(1, Number(req.query.page ?? 1));
@@ -315,14 +311,7 @@ router.get("/admin/list", async (req: Request, res: Response) => {
   try {
     const { rows, count } = await PostQna.findAndCountAll({
       where,
-      include: [
-        {
-          model: User,
-          as: "author", // ⚠️ PostQna.belongsTo(User, { foreignKey:'client_id', as:'author' }) 필요
-          attributes: ["id", "name", "inst"],
-          required: false,
-        },
-      ],
+      
       attributes: [
         "id",
         "title",
@@ -398,7 +387,6 @@ router.post("/comment", async (req: Request, res: Response) => {
     // 글 확인 + 접근 권한
     const post: any = await PostQna.findOne({
       where: { id: Number(post_id) },
-      attributes: ["id", "client_id", "status", "is_private", "comment_count"],
       transaction: t,
       lock: t.LOCK.UPDATE,
     });
@@ -447,6 +435,33 @@ router.post("/comment", async (req: Request, res: Response) => {
     );
 
     await t.commit();
+    console.log(post?.user_email);
+    console.log(body);
+    if(post.client_id === 0){
+     const html = `
+      <div style="font-family: Arial, sans-serif; font-size:14px;">
+        <p>문의하신 사항을 답변드립니다.</p>
+        <p style="margin:16px 0;">
+          ${nl2br(post?.content)}
+        </p>
+        <p>
+        답변 <br/>
+        ${nl2br(body)}
+        </p>
+        <p>더 궁금하신 것이 있으시면 한국클린쿱 관리자에게 문의하십시오.</p>
+      </div>
+    `
+      try {
+        await sendEmail({
+          to: post?.user_email,
+          subject: '한국클린쿱 문의 사항에 답변이 왔습니다.',
+          html
+        });
+      } catch (error) {
+        console.log(error);
+      }
+      
+    }
 
     return res.json({
       is_success: true,

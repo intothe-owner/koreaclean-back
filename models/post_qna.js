@@ -17,6 +17,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         comment: '작성자(회원) Users.id',
       },
+      user_email:{
+        type: DataTypes.STRING(255),
+        allowNull: false,
+        comment: '비회원일 때 user_email',
+      },
       category: {
         type: DataTypes.ENUM('서비스 신청', '변경', '취소', '불만사항', '제안'),
         allowNull: false,
@@ -26,6 +31,11 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(300),
         allowNull: false,
         comment: '제목',
+      },
+      merged_content: {
+        type: DataTypes.TEXT('long'),
+        allowNull: false,
+        comment: '내용',
       },
       content: {
         type: DataTypes.TEXT('long'),
