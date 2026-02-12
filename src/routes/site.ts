@@ -9,7 +9,8 @@ import {
   DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
 
-const { SiteInfo } = require("../../models");
+const { SiteInfo, Download } = require("../../models");
+const { Op } = require("sequelize");
 dotenv.config();
 
 const router = Router();
@@ -398,6 +399,186 @@ router.get("/public", async (req: Request, res: Response) => {
     return res
       .status(400)
       .json({ is_success: false, message: error?.message || "조회 실패" });
+  }
+});
+/* ========================================================================
+ *  자료실 (Download) 라우터
+ *  prefix: /site
+ *  - GET    /site/download          목록
+ *  - GET    /site/download/:id      상세
+ *  - POST   /site/download          등록
+ *  - DELETE /site/download/:id      삭제
+ * ===================================================================== */
+
+/**
+ * GET /site/download
+ * 자료실 목록 조회
+ * query:
+ *  - q?: string      검색어 (제목/설명)
+ *  - page?: number   페이지 번호 (1부터)
+ *  - page_size?: number  페이지 크기
+ *  - order_by?: "createdAt" | "title" | "views"
+ *  - order_dir?: "ASC" | "DESC"
+ */
+router.get("/download", async (req: Request, res: Response) => {
+  try {
+    const {
+      q = "",
+      page = "1",
+      page_size = "10",
+      order_by = "createdAt",
+      order_dir = "DESC",
+    } = req.query as any;
+
+    const pageNum = Math.max(parseInt(String(page), 10) || 1, 1);
+    const pageSizeNum = Math.min(
+      Math.max(parseInt(String(page_size), 10) || 10, 1),
+      100
+    );
+    const offset = (pageNum - 1) * pageSizeNum;
+
+    const where: any = {};
+
+    // 검색어: 제목 + 설명에서 LIKE 검색
+    if (typeof q === "string" && q.trim()) {
+      const keyword = `%${q.trim()}%`;
+      where[Op.or] = [
+        { title: { [Op.like]: keyword } },
+        { description: { [Op.like]: keyword } },
+      ];
+    }
+
+    // 정렬
+    const allowedOrderBy = ["createdAt", "title", "views"] as const;
+    const allowedOrderDir = ["ASC", "DESC"] as const;
+
+    const orderBy =
+      allowedOrderBy.includes(order_by as any) ? (order_by as any) : "createdAt";
+    const orderDir =
+      allowedOrderDir.includes((order_dir as any)?.toUpperCase() as any)
+        ? (order_dir as any).toUpperCase()
+        : "DESC";
+
+    const { rows, count } = await Download.findAndCountAll({
+      where,
+      order: [[orderBy, orderDir]],
+      limit: pageSizeNum,
+      offset,
+    });
+
+    return res.json({
+      is_success: true,
+      total: count,
+      items: rows,
+      page: pageNum,
+      page_size: pageSizeNum,
+    });
+  } catch (error: any) {
+    console.error("[GET /site/download] error:", error);
+    return res
+      .status(400)
+      .json({ is_success: false, message: error?.message || "목록 조회 실패" });
+  }
+});
+
+/**
+ * GET /site/download/:id
+ * 자료실 상세 조회
+ * - 프론트에서 DownloadItem 그대로 받도록 "item wrapper" 없이 row만 리턴
+ */
+router.get("/download/:id", async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) {
+      return res
+        .status(400)
+        .json({ message: "유효한 자료 ID가 아닙니다." });
+    }
+
+    const item = await Download.findByPk(id);
+    if (!item) {
+      return res.status(404).json({ message: "자료를 찾을 수 없습니다." });
+    }
+
+    // 프론트에서 DownloadItem 타입으로 바로 받도록 row만 반환
+    return res.json(item);
+  } catch (error: any) {
+    console.error("[GET /site/download/:id] error:", error);
+    return res
+      .status(400)
+      .json({ message: error?.message || "상세 조회 실패" });
+  }
+});
+
+/**
+ * POST /site/download
+ * 자료실 등록
+ * body:
+ *  - title: string (필수)
+ *  - description?: string
+ *  - files?: Array<{ id?, name, url, size?, type? }>
+ */
+router.post("/download", async (req: Request, res: Response) => {
+  try {
+    const { title, description = "", files = [] } = req.body || {};
+
+    if (!title || typeof title !== "string" || !title.trim()) {
+      return res
+        .status(400)
+        .json({ is_success: false, message: "제목은 필수입니다." });
+    }
+
+    // files는 JSON 배열 그대로 저장 (프론트에서 validation 했다고 가정)
+    const item = await Download.create({
+      title: title.trim(),
+      description: String(description || "").trim(),
+      files: Array.isArray(files) ? files : [],
+    });
+
+    return res.json({
+      is_success: true,
+      message: "등록 성공",
+      item,
+    });
+  } catch (error: any) {
+    console.error("[POST /site/download] error:", error);
+    return res
+      .status(400)
+      .json({ is_success: false, message: error?.message || "등록 실패" });
+  }
+});
+
+/**
+ * DELETE /site/download/:id
+ * 자료실 삭제 (soft delete, paranoid=true)
+ */
+router.delete("/download/:id", async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) {
+      return res
+        .status(400)
+        .json({ is_success: false, message: "유효한 자료 ID가 아닙니다." });
+    }
+
+    const item = await Download.findByPk(id);
+    if (!item) {
+      return res
+        .status(404)
+        .json({ is_success: false, message: "자료를 찾을 수 없습니다." });
+    }
+
+    await item.destroy(); // paranoid: true → soft delete
+
+    return res.json({
+      is_success: true,
+      message: "삭제 성공",
+    });
+  } catch (error: any) {
+    console.error("[DELETE /site/download/:id] error:", error);
+    return res
+      .status(400)
+      .json({ is_success: false, message: error?.message || "삭제 실패" });
   }
 });
 

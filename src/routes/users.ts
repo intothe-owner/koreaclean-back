@@ -30,7 +30,7 @@ const REFRESH_EXPIRES_IN = (process.env.JWT_REFRESH_EXPIRES_IN ?? '30d') as Sign
 // Cookie helpers
 function cookieOpts(maxAgeMs?: number) {
   const isProd = process.env.NODE_ENV === 'production';
-  const sameSiteEnv = (process.env.COOKIE_SAMESITE ?? 'lax').toLowerCase(); 
+  const sameSiteEnv = (process.env.COOKIE_SAMESITE ?? 'lax').toLowerCase();
   const sameSite: 'lax' | 'none' = sameSiteEnv === 'none' ? 'none' : 'lax';
 
   return {
@@ -154,74 +154,79 @@ router.post('/save', async (req: Request, res: Response) => {
 // ───────────────────────────────────────────────────────────────
 // 로그인 (is_use=false면 거부)
 router.post('/login', async (req: Request, res: Response) => {
-  const { email, password, rememberMe } = req.body ?? {};
-  const normalizedEmail = String(email ?? '').trim().toLowerCase();
-  const rawPassword = String(password ?? '');
+  try {
+    const { email, password, rememberMe } = req.body ?? {};
+    const normalizedEmail = String(email ?? '').trim().toLowerCase();
+    const rawPassword = String(password ?? '');
 
-  if (!normalizedEmail || !rawPassword) {
-    return res.status(400).json({ is_success: false, message: 'email과 password는 필수입니다.' });
-  }
+    if (!normalizedEmail || !rawPassword) {
+      return res.status(400).json({ is_success: false, message: 'email과 password는 필수입니다.' });
+    }
 
-  const user = await User.findOne({ where: { email: normalizedEmail } });
-  if (!user) return res.status(401).json({ is_success: false, message: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+    const user = await User.findOne({ where: { email: normalizedEmail } });
+    if (!user) return res.status(401).json({ is_success: false, message: '이메일 또는 비밀번호가 올바르지 않습니다.' });
 
-  if (user.get('is_use') === false) {
-    return res.status(403).json({
-      is_success: false,
-      code: 'ACCOUNT_DEACTIVATED',
-      message: '탈퇴 처리된 계정입니다. 관리자에게 문의하세요.',
+    if (user.get('is_use') === false) {
+      return res.status(403).json({
+        is_success: false,
+        code: 'ACCOUNT_DEACTIVATED',
+        message: '탈퇴 처리된 계정입니다. 관리자에게 문의하세요.',
+      });
+    }
+
+    const ok = await bcrypt.compare(rawPassword, user.get('password_hash') as string);
+    if (!ok) return res.status(401).json({ is_success: false, message: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+
+    const accessToken = signAccessToken({
+      id: user.get('id'),
+      role: user.get('role'),
+      provider: (user.get('provider') as string) || 'local',
     });
-  }
 
-  const ok = await bcrypt.compare(rawPassword, user.get('password_hash') as string);
-  if (!ok) return res.status(401).json({ is_success: false, message: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+    // 쿠키 굽기
+    res.cookie('access_token', accessToken, cookieOpts(30 * 24 * 60 * 60 * 1000)); // 한달
 
-  const accessToken = signAccessToken({
-    id: user.get('id'),
-    role: user.get('role'),
-    provider: (user.get('provider') as string) || 'local',
-  });
+    let refreshToken: string | undefined = undefined;
+    if (AUTO_LOGIN_ENABLED && rememberMe === true) {
+      refreshToken = signRefreshToken({ id: user.get('id') });
+      const refreshAgeMs = 30 * 24 * 60 * 60 * 1000; // 30d
+      res.cookie('refresh_token', refreshToken, cookieOpts(refreshAgeMs));
+    } else {
+      res.clearCookie('refresh_token', { path: '/' });
+    }
 
-  // 쿠키 굽기
-  res.cookie('access_token', accessToken, cookieOpts(30 * 24 * 60 * 60 * 1000)); // 한달
+    // is_company 파생값
+    let is_company = false;
+    if (user?.role === 'COMPANY') {
+      const comRow = await Company.findOne({ where: { owner_user_id: user?.id } });
+      if (comRow?.id) is_company = true;
+    }
 
-  let refreshToken: string | undefined = undefined;
-  if (AUTO_LOGIN_ENABLED && rememberMe === true) {
-    refreshToken = signRefreshToken({ id: user.get('id') });
-    const refreshAgeMs = 30 * 24 * 60 * 60 * 1000; // 30d
-    res.cookie('refresh_token', refreshToken, cookieOpts(refreshAgeMs));
-  } else {
-    res.clearCookie('refresh_token', { path: '/' });
-  }
-
-  // is_company 파생값
-  let is_company = false;
-  if (user?.role === 'COMPANY') {
-    const comRow = await Company.findOne({ where: { owner_user_id: user?.id } });
-    if (comRow?.id) is_company = true;
-  }
-
-  return res.json({
-    is_success: true,
-    message: '로그인 성공',
-    data: {
-      user: {
-        id: user.get('id'),
-        email: user.get('email'),
-        name: user.get('name'),
-        inst: user.get('inst'),
-        contact: user.get('contact'),
-        phone: user.get('phone'),
-        role: user.get('role'),
-        provider: user.get('provider') || 'local',
-        createdAt: user.get('createdAt'),
-        updatedAt: user.get('updatedAt'),
-        is_company,
+    return res.json({
+      is_success: true,
+      message: '로그인 성공',
+      data: {
+        user: {
+          id: user.get('id'),
+          email: user.get('email'),
+          name: user.get('name'),
+          inst: user.get('inst'),
+          contact: user.get('contact'),
+          phone: user.get('phone'),
+          role: user.get('role'),
+          provider: user.get('provider') || 'local',
+          createdAt: user.get('createdAt'),
+          updatedAt: user.get('updatedAt'),
+          is_company,
+        },
+        accessToken,
+        refreshToken,
       },
-      accessToken,
-      refreshToken,
-    },
-  });
+    });
+  } catch (error) {
+    console.log(error);
+  }
+
 });
 
 // ───────────────────────────────────────────────────────────────
@@ -274,7 +279,7 @@ router.post('/refresh', async (req: Request, res: Response) => {
 
 // ───────────────────────────────────────────────────────────────
 // 내 정보 (access_token 또는 쿠키)
-router.get('/me',  async (req: Request, res: Response) => {
+router.get('/me', async (req: Request, res: Response) => {
   try {
     const bearer = req.headers.authorization;
     const fromHeader = bearer?.startsWith('Bearer ') ? bearer.split(' ')[1] : undefined;
@@ -315,7 +320,7 @@ router.get('/me',  async (req: Request, res: Response) => {
         token,
       },
     });
-  } catch(err:any) {
+  } catch (err: any) {
     console.log(err);
     return res.status(401).json({ is_success: false, message: '유효하지 않은 토큰입니다.' });
   }
@@ -400,7 +405,7 @@ router.get('/debug-cookies', (req: Request, res: Response) => {
 
 // ───────────────────────────────────────────────────────────────
 // 사용자 목록 (use=active|inactive|all)
-router.get("/list",  async (req: Request, res: Response) => {
+router.get("/list", async (req: Request, res: Response) => {
   try {
     const {
       q = "",
@@ -446,14 +451,14 @@ router.get("/list",  async (req: Request, res: Response) => {
       }
     }
 
-    const ORDER_FIELDS = new Set(["id","email","name","inst","role","createdAt","updatedAt"]);
+    const ORDER_FIELDS = new Set(["id", "email", "name", "inst", "role", "createdAt", "updatedAt"]);
     const orderField = ORDER_FIELDS.has(String(order_by)) ? String(order_by) : "createdAt";
     const orderDir = String(order_dir).toUpperCase() === "ASC" ? "ASC" : "DESC";
 
     const attributes = [
-      "id","email","name","inst","contact","phone","role","provider",
+      "id", "email", "name", "inst", "contact", "phone", "role", "provider",
       "is_use",
-      "createdAt","updatedAt",
+      "createdAt", "updatedAt",
     ];
 
     const { rows, count } = await User.findAndCountAll({
@@ -548,7 +553,7 @@ router.post("/send-email", auth(), async (req: Request, res: Response) => {
         order: [["id", "ASC"]],
       });
       recipients = rows.map((r: any) => ({ id: r.id, email: r.email, name: r.name ?? null, inst: r.inst ?? null }))
-                       .filter((r:any) => !!r.email);
+        .filter((r: any) => !!r.email);
     } else {
       if (!Array.isArray(ids) || ids.length === 0) {
         return res.status(400).json({ is_success: false, message: "ids가 비어있습니다." });
@@ -560,7 +565,7 @@ router.post("/send-email", auth(), async (req: Request, res: Response) => {
         order: [["id", "ASC"]],
       });
       recipients = rows.map((r: any) => ({ id: r.id, email: r.email, name: r.name ?? null, inst: r.inst ?? null }))
-                       .filter((r:any) => !!r.email);
+        .filter((r: any) => !!r.email);
     }
 
     if (recipients.length === 0) {
@@ -623,18 +628,18 @@ router.patch("/use/:id", auth(), async (req: Request, res: Response) => {
   try {
     const meId = Number((req as any).user?.id ?? (req as any).auth?.userId);
     const meRole = (req as any).user?.role ?? (req as any).auth?.role;
-    if (!["ADMIN","SUPER"].includes(String(meRole))) {
-      return res.status(403).json({ is_success:false, message:"권한이 없습니다." });
+    if (!["ADMIN", "SUPER"].includes(String(meRole))) {
+      return res.status(403).json({ is_success: false, message: "권한이 없습니다." });
     }
 
     const id = Number(req.params.id);
     const { is_use } = req.body ?? {};
     if (!Number.isFinite(id) || typeof is_use !== "boolean") {
-      return res.status(400).json({ is_success:false, message:"id와 is_use(boolean)가 필요합니다." });
+      return res.status(400).json({ is_success: false, message: "id와 is_use(boolean)가 필요합니다." });
     }
 
     const user = await User.findByPk(id);
-    if (!user) return res.status(404).json({ is_success:false, message:"USER_NOT_FOUND" });
+    if (!user) return res.status(404).json({ is_success: false, message: "USER_NOT_FOUND" });
 
     await user.update({ is_use });
 
@@ -644,13 +649,13 @@ router.patch("/use/:id", auth(), async (req: Request, res: Response) => {
     }
 
     return res.json({
-      is_success:true,
+      is_success: true,
       message: is_use ? "계정이 활성화되었습니다." : "계정이 탈퇴 처리되었습니다.",
       data: { id: user.id, is_use: user.get('is_use') }
     });
-  } catch (err:any) {
+  } catch (err: any) {
     console.error("[PATCH /users/use/:id] error:", err);
-    return res.status(500).json({ is_success:false, message: err?.message ?? "SERVER_ERROR" });
+    return res.status(500).json({ is_success: false, message: err?.message ?? "SERVER_ERROR" });
   }
 });
 

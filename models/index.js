@@ -32,7 +32,7 @@ const MainBanner           = require('./mainBanner')(sequelize, DataTypes);
 const Notice               = require('./notice')(sequelize, DataTypes);
 const ServicePricing       = require('./servicePricing')(sequelize, DataTypes);
 const Faq                  = require('./faq')(sequelize, DataTypes);
-
+const Download             = require('./download')(sequelize, DataTypes);
 // ✅ 신규: Review
 const Review               = require('./review')(sequelize, DataTypes);
 
@@ -258,5 +258,6 @@ module.exports = {
   ServiceStat,
 
   VisitStat,
+  Download,
   EduNotice
 };

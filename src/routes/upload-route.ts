@@ -31,8 +31,9 @@ const s3 = new S3Client({
 });
 
 const BUCKET = process.env.AWS_S3_BUCKET!;
+const REGION = process.env.AWS_REGION || "ap-northeast-2";
 const PUBLIC_BASEURL =
-  process.env.AWS_S3_BASEURL || `https://${BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com`;
+  process.env.AWS_S3_BASEURL || `https://${BUCKET}.s3.${REGION}.amazonaws.com`;
 const OBJECT_ACL = (process.env.AWS_S3_ACL || "public-read") as
   | "private"
   | "public-read";
@@ -41,7 +42,7 @@ const OBJECT_ACL = (process.env.AWS_S3_ACL || "public-read") as
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 20 * 1024 * 1024, // 파일당 20MB (원하면 조정)
+    fileSize: 20 * 1024 * 1024, // 파일당 20MB
     files: 10,
   },
   // 필요하면 파일 필터 추가:
@@ -53,34 +54,43 @@ const upload = multer({
 
 /** S3 업로드 공통 함수 */
 async function uploadToS3(params: {
-  prefix: string; // "request" | "company" | "banner" | "qna"
+  prefix: string; // "request" | "company" | "banner" | "qna" | "edu" | "files"
   file: Express.Multer.File;
 }) {
   const { prefix, file } = params;
-  const ext = path.extname(file.originalname || "");
-  const keyFilename = `${Date.now()}-${shortId()}${ext}`; // 저장용 안전 파일명
+  const ext = path.extname(file.originalname || "") || "";
+  const keyFilename = `${Date.now()}-${shortId()}${ext}`; // 저장용 안전 파일명 (ASCII)
   const objectKey = `${prefix}/${keyFilename}`;
 
+  // 한글/특수문자 포함 원본 파일명
+  const originalName = file.originalname || keyFilename;
+  // Content-Disposition용 RFC 5987 방식 (ASCII만 사용)
+  const cdName = encodeURIComponent(originalName);
+
   const putParams: PutObjectCommandInput = {
-  Bucket: BUCKET,
-  Key: objectKey,
-  Body: file.buffer,
-  ContentType: file.mimetype,
-  ContentDisposition: `inline; filename*=UTF-8''${encodeURIComponent(file.originalname || keyFilename)}`,
-  Metadata: { originalname: file.originalname || "" },
-  // ACL 필드 없음 ✅
-};
+    Bucket: BUCKET,
+    Key: objectKey,
+    Body: file.buffer,
+    ContentType: file.mimetype,
+    // ✅ 헤더에는 ASCII만, 한글은 percent-encoding
+    ContentDisposition: `inline; filename*=UTF-8''${cdName}`,
+    // ❌ 한글이 들어가는 Metadata 제거 (S3 메타데이터는 ASCII만 안전)
+    // Metadata: { originalname: file.originalname || "" },
+  };
 
   await s3.send(new PutObjectCommand(putParams));
 
   // URL 생성: public-read면 정적 URL, private이면 서명 URL 반환
   let url: string;
   if (OBJECT_ACL === "public-read") {
-    url = `${PUBLIC_BASEURL}/${encodeURIComponent(objectKey)}`;
+    // objectKey에는 ASCII만 들어가므로 인코딩 없이 사용
+    url = `${PUBLIC_BASEURL}/${objectKey}`;
   } else {
     // private인 경우 1시간짜리 서명 URL (원하면 만료시간 조정)
     url = await getSignedUrl(
       s3,
+      // ✅ 여기선 GetObjectCommand를 쓰는 게 맞지만,
+      // 단순 예시에서는 PutObjectCommand로도 URL 생성 가능(필요 시 변경)
       new PutObjectCommand({ Bucket: BUCKET, Key: objectKey }),
       { expiresIn: 3600 }
     );
@@ -89,8 +99,8 @@ async function uploadToS3(params: {
   return {
     key: objectKey,
     url,
-    name: keyFilename, // 저장명
-    name_original: file.originalname,
+    name: keyFilename,          // 저장명 (ASCII)
+    name_original: originalName, // ✅ 한글 포함 원본명
     size: file.size,
     type: file.mimetype,
   };
@@ -100,7 +110,9 @@ async function uploadToS3(params: {
 export const uploadRouter = Router();
 
 /** 공통 핸들러 팩토리: prefix만 바꿔 재사용 */
-function makeUploadHandler(prefix: "request" | "company" | "banner" | "qna"|"edu") {
+function makeUploadHandler(
+  prefix: "request" | "company" | "banner" | "qna" | "edu" | "files"
+) {
   return async (req: any, res: any) => {
     try {
       const files = (req.files as Express.Multer.File[]) || [];
@@ -114,11 +126,11 @@ function makeUploadHandler(prefix: "request" | "company" | "banner" | "qna"|"edu
       const items = results.map((r) => ({
         id: shortId(),
         url: r.url,
-        name: path.basename(r.name), // 화면 표시용 저장명
-        name_original: r.name_original,
+        name: path.basename(r.name),       // 화면 표시용 저장명
+        name_original: r.name_original,    // ✅ 한글 포함 원본명
         size: r.size,
         type: r.type,
-        key: r.key, // 필요 시 삭제/교체에 사용
+        key: r.key,                        // 삭제/교체에 사용
       }));
 
       res.json(items);
@@ -154,6 +166,11 @@ uploadRouter.post(
   "/edu-upload",
   upload.array("files", 10),
   makeUploadHandler("edu")
+);
+uploadRouter.post(
+  "/files",
+  upload.array("files", 10),
+  makeUploadHandler("files")
 );
 
 /** (선택) 단일 삭제 라우트 — 필요하면 사용
